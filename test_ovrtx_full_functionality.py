@@ -46,17 +46,17 @@ def test_ovrtx_renderer_rendering():
         print("\n4. Testing render() method...")
         num_envs = 2
         
-        # Create dummy camera parameters
+        # Create dummy camera parameters (on GPU!)
         camera_positions = torch.tensor([
             [0.0, 0.0, 2.0],  # Camera 1: 2 units back on Z axis
             [1.0, 0.0, 2.0],  # Camera 2: 1 unit right, 2 units back
-        ], dtype=torch.float32)
+        ], dtype=torch.float32, device="cuda:0")
         
         # Identity rotations (looking forward)
         camera_orientations = torch.tensor([
             [0.0, 0.0, 0.0, 1.0],  # (x, y, z, w) quaternion
             [0.0, 0.0, 0.0, 1.0],
-        ], dtype=torch.float32)
+        ], dtype=torch.float32, device="cuda:0")
         
         # Intrinsic matrices (simple perspective)
         focal_length = 100.0
@@ -68,7 +68,7 @@ def test_ovrtx_renderer_rendering():
             [[focal_length, 0.0, cx],
              [0.0, focal_length, cy],
              [0.0, 0.0, 1.0]],
-        ], dtype=torch.float32)
+        ], dtype=torch.float32, device="cuda:0")
         
         print(f"   - Camera positions: {camera_positions.shape}")
         print(f"   - Camera orientations: {camera_orientations.shape}")

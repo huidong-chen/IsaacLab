@@ -160,16 +160,17 @@ class OVRTXRenderer(RendererBase):
         )
 
     def _setup_scene(self):
-        """Set up the USD scene with cameras and render products.
+        """Set up the USD scene with cameras.
         
-        This creates a minimal USD scene with camera and render product definitions.
+        This creates a minimal USD scene with camera definitions.
+        OVRTX uses the default viewport render product.
         """
         if self._initialized_scene:
             return
             
         print("Setting up OVRTX scene...")
         
-        # Create a simple USD layer with camera(s) and render product(s)
+        # Create a simple USD layer with camera(s)
         # For now, we create one camera per environment
         camera_usda_parts = ['#usda 1.0\n(defaultPrim = "Render")\n\n']
         camera_usda_parts.append('def Scope "Render" {\n')
@@ -185,14 +186,6 @@ class OVRTXRenderer(RendererBase):
         token projection = "perspective"
         matrix4d xformOp:transform = ( (1,0,0,0), (0,1,0,0), (0,0,1,0), (0,0,0,1) )
         uniform token[] xformOpOrder = ["xformOp:transform"]
-    }}
-''')
-        
-        # Create render product for the first camera (we'll handle multi-camera later)
-        camera_usda_parts.append(f'''
-    def RenderProduct "Camera_0_Product" {{
-        rel camera = </Render/Camera_0>
-        uint2 resolution = ({self._width}, {self._height})
     }}
 ''')
         
@@ -261,12 +254,13 @@ class OVRTXRenderer(RendererBase):
                 # Unmap will commit the changes
         
         # Step the renderer to produce a frame
+        # Use the standard Hydra viewport texture render product
         # TODO: For multiple environments, we need multiple render products
-        # For now, render the first camera
+        # For now, render using the default viewport
         if self._renderer is not None:
             try:
                 products = self._renderer.step(
-                    render_products={"/Render/Camera_0_Product"}, 
+                    render_products={"/Render/OmniverseKit/HydraTextures/ViewportTexture0"}, 
                     delta_time=1.0/60.0  # Assume 60 Hz
                 )
                 
