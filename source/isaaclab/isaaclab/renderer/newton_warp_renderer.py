@@ -17,8 +17,6 @@ from isaaclab.utils.math import convert_camera_frame_orientation_convention
 from .newton_warp_renderer_cfg import NewtonWarpRendererCfg
 from .renderer import RendererBase
 
-from ovrtx import Renderer, RendererConfig
-
 
 @wp.kernel
 def _create_camera_transforms_kernel(
@@ -144,20 +142,6 @@ class NewtonWarpRenderer(RendererBase):
     def initialize(self):
         """Initialize the renderer."""
         self._model = NewtonManager.get_model()
-
-        # Create renderer with optional config
-        print("-------------------- creating renderer!")
-        OVRTX_TEST_CONFIG = RendererConfig(
-            startup_options={
-                "crashreporter/dumpDir": "/tmp",
-                # WAR to avoid startup crash due to unsafe FoundationUtils getStringBuffer on log/file which ovrtx doesn't set
-                "log/file": "/tmp/test_ovrtx.log",
-            }
-        )
-        renderer = Renderer(OVRTX_TEST_CONFIG)
-        assert renderer, "Renderer should be valid after creation"
-        print("-------------------- creating renderer done!")
-
 
         self._tiled_camera_sensor = TiledCameraSensor(
             model=self._model,
