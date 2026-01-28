@@ -103,8 +103,14 @@ class OVRTXRenderer(RendererBase):
         self._usd_handles = []
         self._render_product_paths = []
 
-    def initialize(self):
-        """Initialize the OVRTX renderer."""
+    def initialize(self, usd_scene_path: str | None = None):
+        """Initialize the OVRTX renderer.
+        
+        Args:
+            usd_scene_path: Optional path to USD scene to load as root layer.
+                           If provided, cameras will be injected into this file.
+                           If not provided, cameras are created as the root layer.
+        """
         print("Creating OVRTX renderer...")
         OVRTX_CONFIG = RendererConfig(
             startup_options={
@@ -120,9 +126,108 @@ class OVRTXRenderer(RendererBase):
         # Initialize output buffers
         self._initialize_output()
         
-        # Setup scene immediately after initialization (before any USD loads)
-        # This must happen first so cameras exist before scene geometry is loaded
-        self._setup_scene()
+        # If a USD scene is provided, inject cameras into it
+        if usd_scene_path is not None:
+            print(f"Injecting cameras into USD scene: {usd_scene_path}")
+            combined_usd_path = self._inject_cameras_into_usd(usd_scene_path)
+            handle = self._renderer.add_usd(combined_usd_path, path_prefix=None)
+            self._usd_handles.append(handle)
+            print(f"   ✓ Combined scene loaded (handle: {handle})")
+            self._initialized_scene = True
+            
+            # Create binding for camera transforms
+            camera_paths = [f"/Render/Camera_{i}" for i in range(self._num_envs)]
+            self._camera_binding = self._renderer.bind_attribute(
+                prim_paths=camera_paths,
+                attribute_name="omni:fabric:worldMatrix",
+                semantic="transform_4x4",
+                prim_mode="must_exist",
+            )
+        else:
+            # Setup cameras as root layer
+            self._setup_scene(as_root_layer=True)
+    
+    def _inject_cameras_into_usd(self, usd_scene_path: str) -> str:
+        """Inject camera and render product definitions into an existing USD file.
+        
+        Args:
+            usd_scene_path: Path to the USD scene file
+            
+        Returns:
+            Path to the combined USD file with cameras injected
+        """
+        import tempfile
+        
+        # Read the original USD
+        with open(usd_scene_path, 'r') as f:
+            original_usd = f.read()
+        
+        # Generate camera USD content (as a top-level Render scope)
+        camera_parts = []
+        camera_parts.append('\ndef Scope "Render"\n{\n')
+        
+        for env_idx in range(self._num_envs):
+            camera_name = f"Camera_{env_idx}"
+            render_product_name = f"RenderProduct_{env_idx}"
+            camera_path = f"/Render/{camera_name}"
+            render_product_path = f"/Render/{render_product_name}"
+            
+            self._render_product_paths.append(render_product_path)
+            
+            camera_parts.append(f'''
+    def Camera "{camera_name}" (
+        prepend apiSchemas = ["OmniRtxCameraAutoExposureAPI_1", "OmniRtxCameraExposureAPI_1"]
+    ) {{
+        float focalLength = 18.0
+        float horizontalAperture = 20.955
+        float verticalAperture = 15.2908
+        token projection = "perspective"
+        float2 clippingRange = (1, 10000000)
+        bool omni:rtx:autoExposure:enabled = 1
+        matrix4d xformOp:transform = ( (1,0,0,0), (0,1,0,0), (0,0,1,0), (0,0,0,1) )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }}
+''')
+            
+            camera_parts.append(f'''
+    def RenderProduct "{render_product_name}" (
+        prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1"]
+    ) {{
+        rel camera = <{camera_path}>
+        token omni:rtx:background:source:type = "domeLight"
+        token omni:rtx:rendermode = "RealTimePathTracing"
+        token[] omni:rtx:waitForEvents = ["AllLoadingFinished", "OnlyOnFirstRequest"]
+        rel orderedVars = </Render/Vars/LdrColor>
+        uniform int2 resolution = ({self._width}, {self._height})
+    }}
+''')
+        
+        # Add shared RenderVar
+        camera_parts.append('''
+    def "Vars"
+    {
+        def RenderVar "LdrColor"
+        {
+            uniform string sourceName = "LdrColor"
+        }
+    }
+''')
+        
+        camera_parts.append('}\n')
+        camera_content = ''.join(camera_parts)
+        
+        # Simply append the Render scope to the end of the file
+        # This is safe since USD files are declarative
+        combined_usd = original_usd.rstrip() + '\n\n' + camera_content
+        
+        # Save to temp file
+        Path("/tmp/ovrtx_test").mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.usda', delete=False, dir='/tmp/ovrtx_test') as f:
+            f.write(combined_usd)
+            temp_path = f.name
+        
+        print(f"   Created combined USD: {temp_path}")
+        return temp_path
     
     def add_usd_scene(self, usd_file_path: str, path_prefix: str | None = None):
         """Add a USD scene file to the renderer.
@@ -164,12 +269,16 @@ class OVRTXRenderer(RendererBase):
             (self._num_envs, self._height, self._width, 1), dtype=wp.float32, device="cuda:0"
         )
 
-    def _setup_scene(self):
+    def _setup_scene(self, as_root_layer: bool = True):
         """Set up the USD scene with cameras and render products.
         
         This creates a USD scene with camera definitions and their corresponding
         RenderProduct prims according to the OVRTX requirements.
-        Uses 'over' to extend existing /Render scope if it exists.
+        
+        Args:
+            as_root_layer: If True, creates cameras as root layer with 'def Scope "Render"'.
+                          If False, creates cameras as sublayer with 'over "Render"'.
+                          Use False when a USD scene has already been loaded as root layer.
         """
         if self._initialized_scene:
             return
@@ -177,9 +286,17 @@ class OVRTXRenderer(RendererBase):
         print("Setting up OVRTX scene...")
         
         # Create a USD layer with cameras and render products
-        # Use 'over' instead of 'def' to extend existing /Render scope
-        usda_parts = ['#usda 1.0\n\n']
-        usda_parts.append('over "Render" {\n')
+        usda_parts = []
+        
+        if as_root_layer:
+            # Creating as root layer: must set defaultPrim and use 'def'
+            usda_parts.append('#usda 1.0\n')
+            usda_parts.append('(\n    defaultPrim = "Render"\n)\n\n')
+            usda_parts.append('def Scope "Render" {\n')
+        else:
+            # Creating as sublayer: NO header, use 'over' to extend existing scene
+            # The header would make this a root layer!
+            usda_parts.append('over "Render" {\n')
         
         # Create cameras and render products for each environment
         for env_idx in range(self._num_envs):
@@ -235,9 +352,21 @@ class OVRTXRenderer(RendererBase):
         usda_parts.append('}\n')
         usda_content = ''.join(usda_parts)
         
-        # Add the USD layer to the renderer
+        # Add the USD to the renderer
         if self._renderer is not None:
-            handle = self._renderer.add_usd_layer(usda_content, path_prefix=None)
+            if as_root_layer:
+                # Save to temp file and use add_usd for root layer
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.usda', delete=False) as f:
+                    f.write(usda_content)
+                    temp_path = f.name
+                handle = self._renderer.add_usd(temp_path, path_prefix=None)
+                # Clean up temp file
+                Path(temp_path).unlink()
+            else:
+                # Use add_usd_layer for sublayer
+                handle = self._renderer.add_usd_layer(usda_content, path_prefix=None)
+            
             if self._usd_handles is not None:
                 self._usd_handles.append(handle)
         
