@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-Successfully implemented **full rendering functionality** for the OVRTX renderer in Isaac Lab, completing all TODO items from the original integration. The renderer now supports USD scene management, camera configuration, and a complete rendering pipeline following the Newton Warp renderer pattern.
+Successfully implemented **full rendering functionality** for the OVRTX renderer in Isaac Lab with **proper RenderProduct USD schema** integration. The renderer now supports USD scene management, camera configuration with matching RenderProducts, and a complete rendering pipeline following both the Newton Warp renderer pattern and OVRTX's USD requirements.
 
 ---
 
@@ -20,9 +20,10 @@ Successfully implemented **full rendering functionality** for the OVRTX renderer
 - ✓ **USD Scene Management** (`add_usd_scene()` method)
 - ✓ **Camera Configuration** (transform computation from Isaac Lab parameters)
 - ✓ **Render Pipeline** (complete `render()` method implementation)
-- ✓ **Render Product Configuration** (dynamic USD layer with cameras)
+- ✓ **Render Product Configuration** (proper USD schema with Camera + RenderProduct + RenderVar)
 - ✓ **GPU-Accelerated Rendering** (Warp kernels, zero-copy transfers)
 - ✓ **Resource Management** (proper cleanup and lifecycle)
+- ✓ **Multi-Environment Support** (one RenderProduct per environment)
 
 ---
 
@@ -84,17 +85,49 @@ def render(self, camera_positions, camera_orientations, intrinsic_matrices):
 
 ### 4. Render Products ✓
 
-**Dynamic USD Generation:**
-- Creates Camera prims with perspective projection
-- Configures render products linking cameras to outputs
-- Sets resolution from config parameters
+**Dynamic USD Generation with Proper Schema:**
+
+The implementation now creates the complete USD structure required by OVRTX:
+
+```usda
+def Camera "Camera_0" {
+    float focalLength = 18.0
+    float horizontalAperture = 20.955
+    float verticalAperture = 15.2908
+    token projection = "perspective"
+    matrix4d xformOp:transform = ( (1,0,0,0), (0,1,0,0), (0,0,1,0), (0,0,0,1) )
+    uniform token[] xformOpOrder = ["xformOp:transform"]
+}
+
+def RenderProduct "RenderProduct_0" {
+    rel camera = </Render/Camera_0>
+    token[] omni:rtx:waitForEvents = ["AllLoadingFinished", "OnlyOnFirstRequest"]
+    rel orderedVars = [</Render/RenderProduct_0/LdrColor>]
+    uniform int2 resolution = (256, 256)
+    
+    def RenderVar "LdrColor" {
+        uniform string sourceName = "LdrColor"
+    }
+}
+```
+
+**Key Features:**
+- Each Camera has a matching RenderProduct
+- RenderProduct includes nested RenderVar for LdrColor output
+- Camera relationship links RenderProduct to Camera
+- Resolution configured from renderer settings
+- RenderProduct paths passed to `renderer.step()`
 
 **USD Structure:**
 ```
 /Render/
   ├── Camera_0 (Camera prim)
+  ├── RenderProduct_0 (RenderProduct linking Camera_0)
+  │   └── LdrColor (RenderVar)
   ├── Camera_1 (Camera prim)
-  └── Camera_0_Product (RenderProduct)
+  ├── RenderProduct_1 (RenderProduct linking Camera_1)
+  │   └── LdrColor (RenderVar)
+  └── ...
 ```
 
 ### 5. Data Flow ✓
@@ -277,7 +310,7 @@ export LD_PRELOAD=~/dev/kit.0/kit/_build/linux-x86_64/release/libcarb.so
 ### Bottlenecks
 - OVRTX rendering time (depends on scene complexity)
 - First render call (scene setup overhead)
-- Multi-environment scaling (currently renders first camera only)
+- Multi-environment rendering overhead (N render products to process)
 
 ---
 
@@ -304,9 +337,9 @@ export LD_PRELOAD=~/dev/kit.0/kit/_build/linux-x86_64/release/libcarb.so
 ## Remaining Enhancements (Optional)
 
 ### High Priority
-- [ ] Multi-environment rendering (separate render products per camera)
-- [ ] Depth buffer configuration (add depth AOV to render products)
-- [ ] Intrinsics to focal length conversion
+- [x] ~~Multi-environment rendering (separate render products per camera)~~ **COMPLETED**
+- [ ] Depth buffer configuration (add depth RenderVar to render products)
+- [ ] Intrinsics to focal length/aperture conversion
 
 ### Medium Priority
 - [ ] Performance profiling and optimization
@@ -341,9 +374,9 @@ export LD_PRELOAD=~/dev/kit.0/kit/_build/linux-x86_64/release/libcarb.so
 
 ## Known Limitations
 
-1. **Single render product**: Currently renders only the first camera's product
-2. **Depth AOV**: Depth rendering requires additional render product configuration
-3. **Camera intrinsics**: Not yet mapped to USD focal length/aperture
+1. ~~**Single render product**: Currently renders only the first camera's product~~ **FIXED** - Now renders all cameras
+2. **Depth AOV**: Depth rendering requires additional RenderVar in render products
+3. **Camera intrinsics**: Not yet mapped to USD focal length/aperture (uses default values)
 4. **Scene geometry**: Requires manual USD file loading via `add_usd_scene()`
 
 ---

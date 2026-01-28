@@ -95,12 +95,13 @@ class OVRTXRenderer(RendererBase):
     _renderer: Renderer | None = None
     _usd_handles: list | None = None
     _camera_binding = None
-    _render_product_path = "/Render/Camera"
+    _render_product_paths: list[str] = []
     _initialized_scene = False
 
     def __init__(self, cfg: OVRTXRendererCfg):
         super().__init__(cfg)
         self._usd_handles = []
+        self._render_product_paths = []
 
     def initialize(self):
         """Initialize the OVRTX renderer."""
@@ -118,6 +119,10 @@ class OVRTXRenderer(RendererBase):
 
         # Initialize output buffers
         self._initialize_output()
+        
+        # Setup scene immediately after initialization (before any USD loads)
+        # This must happen first so cameras exist before scene geometry is loaded
+        self._setup_scene()
     
     def add_usd_scene(self, usd_file_path: str, path_prefix: str | None = None):
         """Add a USD scene file to the renderer.
@@ -160,41 +165,79 @@ class OVRTXRenderer(RendererBase):
         )
 
     def _setup_scene(self):
-        """Set up the USD scene with cameras.
+        """Set up the USD scene with cameras and render products.
         
-        This creates a minimal USD scene with camera definitions.
-        OVRTX uses the default viewport render product.
+        This creates a USD scene with camera definitions and their corresponding
+        RenderProduct prims according to the OVRTX requirements.
+        Uses 'over' to extend existing /Render scope if it exists.
         """
         if self._initialized_scene:
             return
             
         print("Setting up OVRTX scene...")
         
-        # Create a simple USD layer with camera(s)
-        # For now, we create one camera per environment
-        camera_usda_parts = ['#usda 1.0\n(defaultPrim = "Render")\n\n']
-        camera_usda_parts.append('def Scope "Render" {\n')
+        # Create a USD layer with cameras and render products
+        # Use 'over' instead of 'def' to extend existing /Render scope
+        usda_parts = ['#usda 1.0\n\n']
+        usda_parts.append('over "Render" {\n')
         
-        # Create cameras for each environment
+        # Create cameras and render products for each environment
         for env_idx in range(self._num_envs):
-            camera_path = f"/Render/Camera_{env_idx}"
-            camera_usda_parts.append(f'''
-    def Camera "Camera_{env_idx}" {{
+            camera_name = f"Camera_{env_idx}"
+            render_product_name = f"RenderProduct_{env_idx}"
+            camera_path = f"/Render/{camera_name}"
+            render_product_path = f"/Render/{render_product_name}"
+            
+            # Store render product path for later use
+            self._render_product_paths.append(render_product_path)
+            
+            # Camera definition with RTX API schemas
+            usda_parts.append(f'''
+    def Camera "{camera_name}" (
+        prepend apiSchemas = ["OmniRtxCameraAutoExposureAPI_1", "OmniRtxCameraExposureAPI_1"]
+    ) {{
         float focalLength = 18.0
         float horizontalAperture = 20.955
         float verticalAperture = 15.2908
         token projection = "perspective"
+        float2 clippingRange = (1, 10000000)
+        bool omni:rtx:autoExposure:enabled = 1
         matrix4d xformOp:transform = ( (1,0,0,0), (0,1,0,0), (0,0,1,0), (0,0,0,1) )
         uniform token[] xformOpOrder = ["xformOp:transform"]
     }}
 ''')
+            
+            # RenderProduct definition with RTX settings
+            usda_parts.append(f'''
+    def RenderProduct "{render_product_name}" (
+        prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1"]
+    ) {{
+        rel camera = <{camera_path}>
+        token omni:rtx:background:source:type = "domeLight"
+        token omni:rtx:rendermode = "RealTimePathTracing"
+        token[] omni:rtx:waitForEvents = ["AllLoadingFinished", "OnlyOnFirstRequest"]
+        rel orderedVars = </Render/Vars/LdrColor>
+        uniform int2 resolution = ({self._width}, {self._height})
+    }}
+''')
         
-        camera_usda_parts.append('}\n')
-        camera_usda = ''.join(camera_usda_parts)
+        # Add shared RenderVar if it doesn't exist
+        usda_parts.append('''
+    def "Vars"
+    {
+        def RenderVar "LdrColor"
+        {
+            uniform string sourceName = "LdrColor"
+        }
+    }
+''')
         
-        # Add the camera layer to the renderer
+        usda_parts.append('}\n')
+        usda_content = ''.join(usda_parts)
+        
+        # Add the USD layer to the renderer
         if self._renderer is not None:
-            handle = self._renderer.add_usd_layer(camera_usda, path_prefix="/Render")
+            handle = self._renderer.add_usd_layer(usda_content, path_prefix=None)
             if self._usd_handles is not None:
                 self._usd_handles.append(handle)
         
@@ -209,7 +252,8 @@ class OVRTXRenderer(RendererBase):
             )
         
         self._initialized_scene = True
-        print(f"OVRTX scene setup complete: {self._num_envs} cameras created")
+        print(f"OVRTX scene setup complete: {self._num_envs} cameras and render products created")
+        print(f"Render product paths: {self._render_product_paths[:3]}{'...' if self._num_envs > 3 else ''}")
 
     def render(self, camera_positions: torch.Tensor, camera_orientations: torch.Tensor, intrinsic_matrices: torch.Tensor):
         """Render the scene using OVRTX.
@@ -219,9 +263,9 @@ class OVRTXRenderer(RendererBase):
             camera_orientations: Tensor of shape (num_envs, 4) - camera quaternions (x, y, z, w) in world frame
             intrinsic_matrices: Tensor of shape (num_envs, 3, 3) - camera intrinsic matrices
         """
-        # Setup scene on first render call
+        # Scene should already be set up during initialize()
         if not self._initialized_scene:
-            self._setup_scene()
+            raise RuntimeError("Scene not initialized. This should not happen - scene setup should occur in initialize()")
         
         num_envs = camera_positions.shape[0]
         
@@ -253,31 +297,44 @@ class OVRTXRenderer(RendererBase):
                 wp.copy(wp_transforms_view, camera_transforms)
                 # Unmap will commit the changes
         
-        # Step the renderer to produce a frame
-        # Note: OVRTX requires proper render product configuration
-        # For now, we catch the error gracefully if render product doesn't exist
-        # TODO: Implement proper render product setup per camera
-        if self._renderer is not None:
+        # Step the renderer to produce frames
+        # Now we have properly configured render products
+        if self._renderer is not None and len(self._render_product_paths) > 0:
             try:
-                # Don't actually render if we don't have proper setup
-                # This avoids infinite error spam from OVRTX
-                # Real rendering requires proper RenderProduct prims in USD
-                pass
+                # Render using all configured render products
+                render_product_set = set(self._render_product_paths)
                 
-                # Uncomment when proper render products are configured:
-                # products = self._renderer.step(
-                #     render_products={"/Render/OmniverseKit/HydraTextures/ViewportTexture0"}, 
-                #     delta_time=1.0/60.0
-                # )
-                # 
-                # # Extract rendered images
-                # for product_name, product in products.items():
-                #     for frame_idx, frame in enumerate(product.frames):
-                #         if "LdrColor" in frame.render_vars:
-                #             with frame.render_vars["LdrColor"].map(device="cuda") as mapping:
-                #                 rendered_data = wp.from_dlpack(mapping.tensor)
-                #                 if frame_idx < self._num_envs:
-                #                     wp.copy(self._output_data_buffers["rgba"][frame_idx], rendered_data)
+                products = self._renderer.step(
+                    render_products=render_product_set, 
+                    delta_time=1.0/60.0
+                )
+                
+                # Extract rendered images from each render product
+                for env_idx, product_path in enumerate(self._render_product_paths):
+                    if env_idx >= self._num_envs:
+                        break
+                    
+                    if product_path in products:
+                        product = products[product_path]
+                        
+                        # Get the first frame from this product
+                        if len(product.frames) > 0:
+                            frame = product.frames[0]
+                            
+                            # Extract LdrColor (RGBA) if available
+                            if "LdrColor" in frame.render_vars:
+                                with frame.render_vars["LdrColor"].map(device="cuda") as mapping:
+                                    rendered_data = wp.from_dlpack(mapping.tensor)
+                                    # Copy to our output buffer for this environment
+                                    wp.copy(self._output_data_buffers["rgba"][env_idx], rendered_data)
+                            
+                            # Extract depth if available and configured
+                            # TODO: Add depth RenderVar to the RenderProduct USD definition
+                            # if self._cfg.output_annotators and "depth" in self._cfg.output_annotators:
+                            #     if "distance_to_camera" in frame.render_vars:
+                            #         with frame.render_vars["distance_to_camera"].map(device="cuda") as mapping:
+                            #             depth_data = wp.from_dlpack(mapping.tensor)
+                            #             wp.copy(self._output_data_buffers["depth"][env_idx], depth_data)
         
             except Exception as e:
                 print(f"Warning: OVRTX rendering failed: {e}")
@@ -316,4 +373,6 @@ class OVRTXRenderer(RendererBase):
             # Renderer cleanup is handled automatically by __del__
             self._renderer = None
         
+        # Clear render product paths
+        self._render_product_paths.clear()
         self._initialized_scene = False

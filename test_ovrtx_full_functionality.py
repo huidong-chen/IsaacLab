@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 import numpy as np
+from PIL import Image
 
 # Add the source directory to the path
 source_dir = Path(__file__).parent.parent / "source" / "isaaclab"
@@ -83,6 +84,10 @@ def test_ovrtx_renderer_rendering():
         print("\n5. Checking output buffers...")
         outputs = renderer.get_output()
         
+        # Create output directory
+        output_dir = Path("test_output")
+        output_dir.mkdir(exist_ok=True)
+        
         for name, buffer in outputs.items():
             print(f"   - {name}: shape={buffer.shape}, dtype={buffer.dtype}")
             
@@ -97,6 +102,42 @@ def test_ovrtx_renderer_rendering():
             non_zero = np.count_nonzero(data)
             total = data.size
             print(f"      Non-zero pixels: {non_zero}/{total} ({100*non_zero/total:.2f}%)")
+            
+            # Save rendered images to files
+            if name in ["rgba", "rgb"]:
+                for env_idx in range(data.shape[0]):
+                    img_data = data[env_idx]  # (H, W, C)
+                    
+                    # Convert to uint8 if needed
+                    if img_data.dtype != np.uint8:
+                        img_data = (np.clip(img_data, 0, 1) * 255).astype(np.uint8)
+                    
+                    # Save as PNG
+                    output_file = output_dir / f"test_full_functionality_{name}_env{env_idx}.png"
+                    if img_data.shape[2] == 4:  # RGBA
+                        img = Image.fromarray(img_data, mode='RGBA')
+                    else:  # RGB
+                        img = Image.fromarray(img_data, mode='RGB')
+                    img.save(output_file)
+                    print(f"      Saved: {output_file}")
+            
+            elif name == "depth":
+                for env_idx in range(data.shape[0]):
+                    depth_data = data[env_idx, :, :, 0]  # (H, W)
+                    
+                    # Normalize depth for visualization
+                    if depth_data.max() > depth_data.min():
+                        depth_normalized = (depth_data - depth_data.min()) / (depth_data.max() - depth_data.min())
+                    else:
+                        depth_normalized = depth_data
+                    
+                    depth_img = (depth_normalized * 255).astype(np.uint8)
+                    
+                    # Save as grayscale PNG
+                    output_file = output_dir / f"test_full_functionality_depth_env{env_idx}.png"
+                    img = Image.fromarray(depth_img, mode='L')
+                    img.save(output_file)
+                    print(f"      Saved: {output_file}")
         
         # Test reset
         print("\n6. Testing reset()...")

@@ -42,6 +42,7 @@ docker/.container.cfg
 **/.neptune/*
 docker/artifacts/
 *.tmp
+test_output/
 
 # Doc Outputs
 **/docs/_build/*
