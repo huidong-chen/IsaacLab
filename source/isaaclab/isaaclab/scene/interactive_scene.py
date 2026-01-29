@@ -27,7 +27,6 @@ from .interactive_scene_cfg import InteractiveSceneCfg
 # import logger
 logger = logging.getLogger(__name__)
 
-
 class InteractiveScene:
     """A scene that contains entities added to the simulation.
 
@@ -97,6 +96,12 @@ class InteractiveScene:
         for more details.
     """
 
+    def _export_stage(self, export_path):
+        print(f"[DEBUG] Exporting USD stage to: {export_path}")
+        self.stage.Export(export_path)
+        print(f"[DEBUG] Stage exported successfully!")
+
+
     def __init__(self, cfg: InteractiveSceneCfg):
         """Initializes the scene.
 
@@ -143,15 +148,24 @@ class InteractiveScene:
             self.stage, [self.env_fmt.format(0)], [self.env_fmt], self._ALL_INDICES, positions=self._default_env_origins
         )
 
+        self._export_stage("/tmp/stage_before_entities.usda")
+
         self._global_prim_paths = list()
         if self._is_scene_setup_from_cfg():
             self._global_template_prim_paths = list()  # store paths that are in global collision filter from templates
             self._add_entities_from_cfg()
+            print(f"global_template_prim_paths {self._global_template_prim_paths}")
             for prim_path in self._global_template_prim_paths:
+                print(f"adding {prim_path}")
                 filter_regex = prim_path.replace(self.cloner_cfg.template_root, self.env_regex_ns)
+                print(f"filter_regex {filter_regex}")
                 self._global_prim_paths.extend(sim_utils.find_matching_prim_paths(filter_regex))
+                print(f"global_prim_paths {self._global_prim_paths}")
+
+            self._export_stage("/tmp/stage_after_template.usda")
 
             self.clone_environments(copy_from_source=(not self.cfg.replicate_physics))
+            self._export_stage("/tmp/stage_after_clone.usda")
             if self.cfg.filter_collisions:
                 self.filter_collisions(self._global_prim_paths)
 
@@ -563,6 +577,7 @@ class InteractiveScene:
             if asset_name in InteractiveSceneCfg.__dataclass_fields__ or asset_cfg is None:
                 continue
             # resolve regex
+            print(f"adding {asset_name} {asset_cfg}")
             require_clone = False
             if hasattr(asset_cfg, "prim_path"):
                 # In order to compose cloner behavior more flexibly, we ask each spawner to spawn prototypes in

@@ -59,41 +59,11 @@ def Xform "World"
         uniform token[] xformOpOrder = ["xformOp:translate"]
     }
     
-    def Cylinder "GreenCylinder" (
-        prepend apiSchemas = ["MaterialBindingAPI"]
-    )
-    {
-        float3[] extent = [(-30, -40, -30), (30, 40, 30)]
-        double height = 80
-        rel material:binding = </World/Materials/GreenMaterial>
-        double radius = 30
-        double3 xformOp:translate = (-120, 40, 0)
-        uniform token[] xformOpOrder = ["xformOp:translate"]
-    }
-    
-    def Mesh "GroundPlane" (
-        prepend apiSchemas = ["MaterialBindingAPI"]
-    )
-    {
-        float3[] extent = [(-500, 0, -500), (500, 0, 500)]
-        int[] faceVertexCounts = [4]
-        int[] faceVertexIndices = [0, 1, 2, 3]
-        rel material:binding = </World/Materials/GroundMaterial>
-        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]
-        point3f[] points = [(-500, 0, -500), (500, 0, -500), (500, 0, 500), (-500, 0, 500)]
-    }
     
     def DistantLight "SunLight"
     {
         float intensity = 5000
         float3 xformOp:rotateXYZ = (315, 45, 0)
-        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
-    }
-    
-    def DomeLight "SkyLight"
-    {
-        float inputs:intensity = 1500
-        double3 xformOp:rotateXYZ = (270, 0, 0)
         uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
     }
     
@@ -195,8 +165,8 @@ def Xform "World"
         print("\n3. Positioning cameras to view scene...")
         # Camera looking at origin from elevated angle
         camera_positions = torch.tensor([
-            [300.0, 200.0, 300.0],  # Environment 0
-            [250.0, 150.0, 250.0],  # Environment 1
+            [0.0, 50.0, 300.0],  # Environment 0
+            [0.0, 0.0, 50.0],  # Environment 1
         ], dtype=torch.float32, device="cuda:0")
         
         # Point cameras toward origin (scene center)
@@ -220,10 +190,15 @@ def Xform "World"
         
         print("   ✓ Camera parameters set")
         
-        # 4. Render!
-        print("\n4. Rendering scene...")
-        renderer.render(camera_positions, camera_orientations, intrinsic_matrices)
-        print("   ✓ Render complete")
+        # 4. Render multiple frames for path tracer accumulation
+        print("\n4. Rendering scene (with accumulation frames)...")
+        for frame_idx in range(10):  # Render 10 frames to accumulate samples
+            renderer.render(camera_positions, camera_orientations, intrinsic_matrices)
+            if frame_idx == 0:
+                print(f"   Frame {frame_idx}: Initial render")
+            elif frame_idx == 9:
+                print(f"   Frame {frame_idx}: Final accumulated render")
+        print("   ✓ Render complete with accumulation")
         
         # 5. Check output
         print("\n5. Analyzing rendered output...")

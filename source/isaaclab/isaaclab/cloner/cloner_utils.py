@@ -161,6 +161,7 @@ def usd_replicate(
     Returns:
         None
     """
+    print(f"replicating {sources} to {destinations}")
     rl = stage.GetRootLayer()
 
     # Group replication by destination path depth so ancestors land before deeper paths.
@@ -187,6 +188,7 @@ def usd_replicate(
                 for wid in target_envs.tolist():
                     dp = tmpl.format(wid)
                     Sdf.CreatePrimInLayer(rl, dp)
+                    print(f"copying {src} to {dp}")
                     Sdf.CopySpec(rl, Sdf.Path(src), rl, Sdf.Path(dp))
 
                     if positions is not None or quaternions is not None:

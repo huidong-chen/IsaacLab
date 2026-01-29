@@ -455,6 +455,7 @@ class OVRTXRenderer(RendererBase):
                                 with frame.render_vars["LdrColor"].map(device="cuda") as mapping:
                                     rendered_data = wp.from_dlpack(mapping.tensor)
                                     # Copy to our output buffer for this environment
+                                    print("copied rgba data")
                                     wp.copy(self._output_data_buffers["rgba"][env_idx], rendered_data)
                             
                             # Extract depth if available and configured

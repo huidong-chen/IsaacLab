@@ -22,7 +22,7 @@ from .camera import Camera
 if TYPE_CHECKING:
     from .tiled_camera_cfg import TiledCameraCfg
 
-from isaaclab.renderer import NewtonWarpRendererCfg, get_renderer_class
+from isaaclab.renderer import NewtonWarpRendererCfg, OVRTXRendererCfg, get_renderer_class
 
 
 class TiledCamera(Camera):
@@ -160,7 +160,32 @@ class TiledCamera(Camera):
             if renderer_cls is None:
                 raise RuntimeError(f"Failed to load renderer class for type '{self.cfg.renderer_type}'.")
             self._renderer = renderer_cls(renderer_cfg)
+            
+            # EXPORT STAGE TO USD FILE RIGHT BEFORE RENDERER INITIALIZATION
+            export_path = "/tmp/stage_before_newton.usda"
+            print(f"[DEBUG] Exporting USD stage to: {export_path}")
+            self.stage.Export(export_path)
+            print(f"[DEBUG] Stage exported successfully!")
+            
             self._renderer.initialize()
+        elif self.cfg.renderer_type == "ov_rtx":
+            renderer_cfg = OVRTXRendererCfg(
+                width=self.cfg.width, height=self.cfg.height, num_cameras=self._view.count, num_envs=self._num_envs
+            )
+            # Lazy-load the renderer class
+            renderer_cls = get_renderer_class("ov_rtx")
+            if renderer_cls is None:
+                raise RuntimeError(f"Failed to load renderer class for type '{self.cfg.renderer_type}'.")
+            self._renderer = renderer_cls(renderer_cfg)
+            
+            # EXPORT STAGE TO USD FILE RIGHT BEFORE RENDERER INITIALIZATION
+            export_path = "/tmp/stage_before_ovrtx.usda"
+            print(f"[DEBUG] Exporting USD stage to: {export_path}")
+            self.stage.Export(export_path)
+            print(f"[DEBUG] Stage exported successfully!")
+            
+            self._renderer.initialize(usd_scene_path=export_path)
+            print("initiaized renderer (ovrtx)")
 
         else:
             raise ValueError(f"Renderer type '{self.cfg.renderer_type}' is not supported.")
