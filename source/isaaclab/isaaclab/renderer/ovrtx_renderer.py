@@ -10,8 +10,10 @@ import os
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 import warp as wp
+from PIL import Image
 
 # Set environment variables for OVRTX
 os.environ["OVRTX_SKIP_USD_CHECK"] = "1"
@@ -97,11 +99,13 @@ class OVRTXRenderer(RendererBase):
     _camera_binding = None
     _render_product_paths: list[str] = []
     _initialized_scene = False
+    _frame_counter: int = 0  # Track frame number for image filenames
 
     def __init__(self, cfg: OVRTXRendererCfg):
         super().__init__(cfg)
         self._usd_handles = []
         self._render_product_paths = []
+        self._frame_counter = 0
 
     def initialize(self, usd_scene_path: str | None = None):
         """Initialize the OVRTX renderer.
@@ -396,6 +400,9 @@ class OVRTXRenderer(RendererBase):
         if not self._initialized_scene:
             raise RuntimeError("Scene not initialized. This should not happen - scene setup should occur in initialize()")
         
+        # Increment frame counter
+        self._frame_counter += 1
+        
         num_envs = camera_positions.shape[0]
         
         # Convert camera orientations from Isaac Lab convention to OpenGL convention
@@ -455,8 +462,10 @@ class OVRTXRenderer(RendererBase):
                                 with frame.render_vars["LdrColor"].map(device="cuda") as mapping:
                                     rendered_data = wp.from_dlpack(mapping.tensor)
                                     # Copy to our output buffer for this environment
-                                    print("copied rgba data")
                                     wp.copy(self._output_data_buffers["rgba"][env_idx], rendered_data)
+                                    
+                                    # Save image to disk
+                                    self._save_image_to_disk(rendered_data, env_idx)
                             
                             # Extract depth if available and configured
                             # TODO: Add depth RenderVar to the RenderProduct USD definition
@@ -469,6 +478,52 @@ class OVRTXRenderer(RendererBase):
             except Exception as e:
                 print(f"Warning: OVRTX rendering failed: {e}")
                 # Keep the output buffers as-is (zeros from initialization)
+
+    def _save_image_to_disk(self, rendered_data_wp: wp.array, env_idx: int):
+        """Save rendered image to disk.
+        
+        Args:
+            rendered_data_wp: Warp array containing RGBA data, shape (height, width, 4)
+            env_idx: Environment index for filename
+        """
+        try:
+            # Convert warp array to torch tensor, then to numpy
+            rendered_data_torch = wp.to_torch(rendered_data_wp)
+            rendered_data_np = rendered_data_torch.cpu().numpy()
+            
+            # Convert from float [0, 1] to uint8 [0, 255]
+            if rendered_data_np.dtype in [np.float32, np.float64]:
+                rendered_data_np = (rendered_data_np * 255).astype(np.uint8)
+            
+            # Create output directory if it doesn't exist
+            output_dir = Path("ovrtx_rendered_images")
+            output_dir.mkdir(exist_ok=True)
+            
+            # Save as PNG
+            # rendered_data_np is shape (height, width, 4) for RGBA
+            if len(rendered_data_np.shape) == 3 and rendered_data_np.shape[2] == 4:
+                # RGBA image
+                image = Image.fromarray(rendered_data_np, mode='RGBA')
+            elif len(rendered_data_np.shape) == 3 and rendered_data_np.shape[2] == 3:
+                # RGB image
+                image = Image.fromarray(rendered_data_np, mode='RGB')
+            elif len(rendered_data_np.shape) == 2:
+                # Grayscale image
+                image = Image.fromarray(rendered_data_np, mode='L')
+            else:
+                print(f"Warning: Unexpected image shape {rendered_data_np.shape}, cannot save")
+                return
+            
+            # Save with frame and environment index in filename
+            output_path = output_dir / f"frame_{self._frame_counter:06d}_env_{env_idx:04d}.png"
+            image.save(output_path)
+            
+            # Only print for first environment and first few frames to avoid spam
+            if env_idx == 0 and self._frame_counter <= 5:
+                print(f"[OVRTX] Saved rendered image: {output_path}")
+                
+        except Exception as e:
+            print(f"Warning: Failed to save image for env {env_idx}: {e}")
 
     def step(self):
         """Step the renderer."""
