@@ -135,9 +135,13 @@ class NewtonWarpRenderer(RendererBase):
 
     # tiled camerae sensor from warp trace
     _tiled_camera_sensor = None
+    
+    # Frame counter for debug output
+    _frame_counter: int = 0
 
     def __init__(self, cfg: NewtonWarpRendererCfg):
         super().__init__(cfg)
+        self._frame_counter = 0
 
     def initialize(self):
         """Initialize the renderer."""
@@ -202,6 +206,51 @@ class NewtonWarpRenderer(RendererBase):
             dtype=wp.float32,
             device=self._raw_output_depth_buffer.device,
         )
+    
+    def _print_camera_transforms_debug(
+        self,
+        newton_transforms: wp.array,
+        camera_positions: torch.Tensor,
+        camera_orientations: torch.Tensor,
+    ):
+        """Print debug information about camera transforms for Newton renderer.
+        
+        Args:
+            newton_transforms: Warp array of wp.transformf (num_envs, 1)
+            camera_positions: Isaac Lab camera positions (num_envs, 3) in world frame
+            camera_orientations: Isaac Lab camera orientations (num_envs, 4) in OpenGL convention (xyzw)
+        """
+        print("\n" + "="*80)
+        print("NEWTON WARP RENDERER - Camera Transform Debug (Frame 1)")
+        print("="*80)
+        
+        # Convert to CPU for printing
+        camera_positions_cpu = camera_positions.cpu()
+        camera_orientations_cpu = camera_orientations.cpu()
+        
+        # Copy Newton transforms to numpy via torch
+        newton_transforms_torch = wp.to_torch(newton_transforms)
+        newton_transforms_cpu = newton_transforms_torch.cpu().numpy()
+        
+        # Print for first 3 cameras (or all if fewer)
+        num_to_print = min(3, camera_positions.shape[0])
+        
+        for i in range(num_to_print):
+            print(f"\n--- Camera {i} ---")
+            
+            # Isaac Lab Input (OpenGL convention)
+            print(f"Isaac Lab Input (OpenGL convention):")
+            pos = camera_positions_cpu[i]
+            quat_opengl = camera_orientations_cpu[i]
+            print(f"  Position (world): {pos.numpy()}")
+            print(f"  Orientation (opengl, xyzw): {quat_opengl.numpy()}")
+            
+            # Newton Transform (wp.transformf accessed via numpy array)
+            print(f"\nNewton Transform (wp.transformf):")
+            print(f"  (Full transform struct shown via torch conversion)")
+            print(f"  Transform data: {newton_transforms_cpu[i, 0]}")
+            
+        print("\n" + "="*80 + "\n")
 
     def render(
         self, camera_positions: torch.Tensor, camera_orientations: torch.Tensor, intrinsic_matrices: torch.Tensor
@@ -213,18 +262,21 @@ class NewtonWarpRenderer(RendererBase):
             camera_orientations: Tensor of shape (num_envs, 4) - camera quaternions (x, y, z, w) in world frame
             intrinsic_matrices: Tensor of shape (num_envs, 3, 3) - camera intrinsic matrices
         """
+        # Increment frame counter
+        self._frame_counter += 1
+        
         if self._camera_rays is None:
             self.set_camera_rays_from_intrinsics(intrinsic_matrices)
         num_envs = camera_positions.shape[0]
 
+        # Camera orientations are already in OpenGL convention from USD
+        # No conversion needed!
+        camera_quats_opengl = camera_orientations
+
         # Convert torch tensors to warp arrays directly on GPU
         # Positions: shape (num_envs, 3) -> shape (num_envs,) of vec3
         camera_positions_wp = wp.from_torch(camera_positions.contiguous(), dtype=wp.vec3)
-        camera_quats_converted = convert_camera_frame_orientation_convention(
-            camera_orientations, origin="world", target="opengl"
-        )
-
-        camera_orientations_wp = wp.from_torch(camera_quats_converted, dtype=wp.quat)
+        camera_orientations_wp = wp.from_torch(camera_quats_opengl, dtype=wp.quat)
 
         # Create camera transforms array, TODO: num_cameras = 1
         # Format: wp.array of shape (num_envs, num_cameras), dtype=wp.transformf
@@ -237,6 +289,14 @@ class NewtonWarpRenderer(RendererBase):
             inputs=[camera_positions_wp, camera_orientations_wp, camera_transforms],
             device=camera_positions_wp.device,
         )
+        
+        # Debug: Print transforms on first frame
+        if self._frame_counter == 1:
+            self._print_camera_transforms_debug(
+                camera_transforms,
+                camera_positions,
+                camera_orientations,
+            )
 
         # Render using TiledCameraSensor
         self._tiled_camera_sensor.render(

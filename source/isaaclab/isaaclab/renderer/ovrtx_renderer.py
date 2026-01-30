@@ -77,13 +77,15 @@ def _create_camera_transforms_kernel(
     r22 = 1.0 - 2.0 * (qx * qx + qy * qy)
     
     # Build 4x4 homogeneous transform matrix
+    # IMPORTANT: Matrix is stored in COLUMN-MAJOR order for OVRTX
+    # So we transpose the rotation part: columns become rows
     _0 = wp.float64(0.0)
     _1 = wp.float64(1.0)
     # Note: Type issues with warp vec3 indexing are expected
     transforms[i] = wp.mat44d(  # type: ignore
-        wp.float64(r00), wp.float64(r01), wp.float64(r02), _0,
-        wp.float64(r10), wp.float64(r11), wp.float64(r12), _0,
-        wp.float64(r20), wp.float64(r21), wp.float64(r22), _0,
+        wp.float64(r00), wp.float64(r10), wp.float64(r20), _0,
+        wp.float64(r01), wp.float64(r11), wp.float64(r21), _0,
+        wp.float64(r02), wp.float64(r12), wp.float64(r22), _0,
         wp.float64(float(pos[0])), wp.float64(float(pos[1])), wp.float64(float(pos[2])), _1
     )
 
@@ -142,12 +144,23 @@ class OVRTXRenderer(RendererBase):
             
             # Create binding for camera transforms
             camera_paths = [f"/World/envs/env_{i}/Camera" for i in range(self._num_envs)]
+            
+            print(f"\n[DEBUG] OVRTX Camera Binding Setup:")
+            print(f"  Total cameras: {self._num_envs}")
+            print(f"  Example camera paths: {camera_paths[:3]}")
+            print(f"  Binding to attribute: omni:fabric:worldMatrix")
+            
             self._camera_binding = self._renderer.bind_attribute(
                 prim_paths=camera_paths,
                 attribute_name="omni:fabric:worldMatrix",
                 semantic="transform_4x4",
                 prim_mode="must_exist",
             )
+            
+            if self._camera_binding is not None:
+                print(f"  ✓ Camera binding created successfully")
+            else:
+                print(f"  ✗ WARNING: Camera binding is None!")
         else:
             # Setup cameras as root layer
             self._setup_scene(as_root_layer=True)
@@ -391,33 +404,42 @@ class OVRTXRenderer(RendererBase):
         
         num_envs = camera_positions.shape[0]
         
-        # Convert camera orientations from Isaac Lab convention to OpenGL convention
-#        camera_quats_converted = convert_camera_frame_orientation_convention(
-#            camera_orientations, origin="world", target="opengl"
-#        )
-#        
-#        # Convert torch tensors to warp arrays
-#        camera_positions_wp = wp.from_torch(camera_positions.contiguous(), dtype=wp.vec3)
-#        camera_orientations_wp = wp.from_torch(camera_quats_converted.contiguous(), dtype=wp.quatf)
-#        
-#        # Create camera transforms array
-#        camera_transforms = wp.zeros(num_envs, dtype=wp.mat44d, device="cuda:0")
-#        
-#        # Launch kernel to populate transforms
-#        wp.launch(
-#            kernel=_create_camera_transforms_kernel,
-#            dim=num_envs,
-#            inputs=[camera_positions_wp, camera_orientations_wp, camera_transforms],
-#            device="cuda:0",
-#        )
-#        
-#        # Update camera transforms in the scene using the binding
-#        if self._camera_binding is not None:
-#            with self._camera_binding.map(device="cuda", device_id=0) as attr_mapping:
-#                wp_transforms_view = wp.from_dlpack(attr_mapping.tensor, dtype=wp.mat44d)
-#                # Copy our computed transforms to the mapped buffer
-#                wp.copy(wp_transforms_view, camera_transforms)
-#                # Unmap will commit the changes
+        # Camera orientations are already in OpenGL convention from USD
+        # No conversion needed!
+        camera_quats_opengl = camera_orientations
+        
+        # Convert torch tensors to warp arrays
+        camera_positions_wp = wp.from_torch(camera_positions.contiguous(), dtype=wp.vec3)
+        camera_orientations_wp = wp.from_torch(camera_quats_opengl.contiguous(), dtype=wp.quatf)
+        
+        # Create camera transforms array
+        camera_transforms = wp.zeros(num_envs, dtype=wp.mat44d, device="cuda:0")
+        
+        # Launch kernel to populate transforms
+        wp.launch(
+            kernel=_create_camera_transforms_kernel,
+            dim=num_envs,
+            inputs=[camera_positions_wp, camera_orientations_wp, camera_transforms],
+            device="cuda:0",
+        )
+        
+        # Update camera transforms in the scene using the binding
+        if self._camera_binding is not None:
+            with self._camera_binding.map(device="cuda", device_id=0) as attr_mapping:
+                wp_transforms_view = wp.from_dlpack(attr_mapping.tensor, dtype=wp.mat44d)
+                
+                # Debug: Print transforms before and after update (first frame only)
+                if self._frame_counter == 1:
+                    self._print_camera_transforms_debug(
+                        wp_transforms_view, 
+                        camera_transforms, 
+                        camera_positions, 
+                        camera_orientations
+                    )
+                
+                # Copy our computed transforms to the mapped buffer
+                wp.copy(wp_transforms_view, camera_transforms)
+                # Unmap will commit the changes
         
         # Step the renderer to produce frames
         # Now we have properly configured render products
@@ -464,6 +486,63 @@ class OVRTXRenderer(RendererBase):
             except Exception as e:
                 print(f"Warning: OVRTX rendering failed: {e}")
                 # Keep the output buffers as-is (zeros from initialization)
+
+    def _print_camera_transforms_debug(
+        self, 
+        ovrtx_transforms: wp.array, 
+        new_transforms: wp.array,
+        camera_positions: torch.Tensor,
+        camera_orientations: torch.Tensor
+    ):
+        """Print camera transforms before and after update for debugging.
+        
+        Args:
+            ovrtx_transforms: Current transforms in OVRTX (before update)
+            new_transforms: New transforms to apply
+            camera_positions: Camera positions from Isaac Lab
+            camera_orientations: Camera orientations from Isaac Lab
+        """
+        print("\n" + "="*80)
+        print("CAMERA TRANSFORM DEBUG (Frame 1)")
+        print("="*80)
+        
+        # Convert to torch for easier printing
+        ovrtx_transforms_torch = wp.to_torch(ovrtx_transforms).cpu()
+        new_transforms_torch = wp.to_torch(new_transforms).cpu()
+        
+        # Print first 3 cameras (or all if less than 3)
+        num_to_print = min(3, self._num_envs)
+        
+        for i in range(num_to_print):
+            print(f"\n--- Camera {i} ---")
+            
+            # Print Isaac Lab inputs
+            print(f"Isaac Lab Input:")
+            print(f"  Position (world): {camera_positions[i].cpu().numpy()}")
+            print(f"  Orientation (world, xyzw): {camera_orientations[i].cpu().numpy()}")
+            
+            # Print OVRTX current transform (before update)
+            print(f"\nOVRTX Current Transform (BEFORE update):")
+            ovrtx_mat = ovrtx_transforms_torch[i]
+            for row in range(4):
+                print(f"  [{ovrtx_mat[row, 0]:8.4f}, {ovrtx_mat[row, 1]:8.4f}, "
+                      f"{ovrtx_mat[row, 2]:8.4f}, {ovrtx_mat[row, 3]:8.4f}]")
+            
+            # Print new transform (after conversion, before update)
+            print(f"\nNew Transform (AFTER conversion, to be applied):")
+            new_mat = new_transforms_torch[i]
+            for row in range(4):
+                print(f"  [{new_mat[row, 0]:8.4f}, {new_mat[row, 1]:8.4f}, "
+                      f"{new_mat[row, 2]:8.4f}, {new_mat[row, 3]:8.4f}]")
+            
+            # Extract translation from new transform for easy verification
+            translation = new_mat[3, :3]
+            print(f"\n  Translation from matrix: {translation.numpy()}")
+        
+        if self._num_envs > 3:
+            print(f"\n... ({self._num_envs - 3} more cameras not shown)")
+        
+        print("\n" + "="*80 + "\n")
 
     def _save_image_to_disk(self, rendered_data_wp: wp.array, env_idx: int):
         """Save rendered image to disk.

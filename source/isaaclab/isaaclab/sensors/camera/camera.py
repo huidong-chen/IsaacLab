@@ -109,12 +109,20 @@ class Camera(SensorBase):
         if self.cfg.spawn is not None:
             # compute the rotation offset (cfg.offset.rot is in xyzw format)
             rot = torch.tensor(self.cfg.offset.rot, dtype=torch.float32, device="cpu").unsqueeze(0)
+            
+            print(f"\n[DEBUG Camera.__init__] Spawning camera:")
+            print(f"  Config offset.rot (xyzw): {self.cfg.offset.rot}")
+            print(f"  Config offset.convention: {self.cfg.offset.convention}")
+            
             rot_offset = convert_camera_frame_orientation_convention(
                 rot, origin=self.cfg.offset.convention, target="opengl"
             )
             rot_offset = rot_offset.squeeze(0).cpu().numpy()
             # keep xyzw to match XFormPrim conventions
             rot_offset_xyzw = (rot_offset[0], rot_offset[1], rot_offset[2], rot_offset[3])
+            
+            print(f"  Converted to opengl (xyzw): {rot_offset_xyzw}")
+            print(f"  Position: {self.cfg.offset.pos}")
             # ensure vertical aperture is set, otherwise replace with default for squared pixels
             if self.cfg.spawn.vertical_aperture is None:
                 self.cfg.spawn.vertical_aperture = self.cfg.spawn.horizontal_aperture * self.cfg.height / self.cfg.width
@@ -596,10 +604,26 @@ class Camera(SensorBase):
 
         # get the poses from the view
         poses, quat = self._view.get_world_poses(env_ids)
+        
+        # DEBUG: Print what we got from the view for first camera
+        if 0 in env_ids:
+            env_0_idx = list(env_ids).index(0)
+            print(f"\n[DEBUG Camera._update_poses] Camera 0 from XFormPrim.get_world_poses():")
+            print(f"  Position: {poses[env_0_idx]}")
+            print(f"  Quaternion (raw, xyzw, OpenGL convention): {quat[env_0_idx]}")
+        
         self._data.pos_w[env_ids] = poses.to(device=self._device)
-        self._data.quat_w_world[env_ids] = convert_camera_frame_orientation_convention(
-            quat.to(device=self._device), origin="opengl", target="world"
-        )
+        
+        # IMPORTANT: Keep quaternions in OpenGL convention (don't convert to world)
+        # USD cameras are in OpenGL convention, and both Newton and OVRTX renderers
+        # expect OpenGL convention. Converting to "world" and back is unnecessary and
+        # can introduce numerical errors.
+        self._data.quat_w_world[env_ids] = quat.to(device=self._device)
+        
+        # DEBUG: Print stored value
+        if 0 in env_ids:
+            env_0_idx = list(env_ids).index(0)
+            print(f"  Stored quaternion (no conversion): {self._data.quat_w_world[env_0_idx]}")
 
     def _create_annotator_data(self):
         """Create the buffers to store the annotator data.

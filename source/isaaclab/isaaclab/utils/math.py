@@ -1593,6 +1593,9 @@ def convert_camera_frame_orientation_convention(
     elif target == "world":
         # convert from opengl to world (x forward and z up) convention
         rotm = matrix_from_quat(quat_gl)
+        # Since world→opengl does: R_gl = R_world * T (right multiply)
+        # The inverse is: R_world = R_gl * T^(-1) (right multiply with inverse)
+        # For rotation matrices: T^(-1) = T^T
         rotm = torch.matmul(
             rotm,
             matrix_from_euler(torch.tensor([math.pi / 2, -math.pi / 2, 0], device=orientation.device), "XYZ").T,
