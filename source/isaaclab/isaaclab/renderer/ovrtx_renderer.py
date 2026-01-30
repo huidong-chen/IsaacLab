@@ -59,6 +59,7 @@ def _create_camera_transforms_kernel(
     
     # Quaternion to rotation matrix (3x3)
     qx, qy, qz, qw = quat[0], quat[1], quat[2], quat[3]
+    #qw, qx, qy, qz = quat[0], quat[1], quat[2], quat[3]
     
     # Row 0
     r00 = 1.0 - 2.0 * (qy * qy + qz * qz)
@@ -140,7 +141,7 @@ class OVRTXRenderer(RendererBase):
             self._initialized_scene = True
             
             # Create binding for camera transforms
-            camera_paths = [f"/Render/Camera_{i}" for i in range(self._num_envs)]
+            camera_paths = [f"/World/envs/env_{i}/Camera" for i in range(self._num_envs)]
             self._camera_binding = self._renderer.bind_attribute(
                 prim_paths=camera_paths,
                 attribute_name="omni:fabric:worldMatrix",
@@ -171,27 +172,12 @@ class OVRTXRenderer(RendererBase):
         camera_parts.append('\ndef Scope "Render"\n{\n')
         
         for env_idx in range(self._num_envs):
-            camera_name = f"Camera_{env_idx}"
+            camera_path = f"/World/envs/env_{env_idx}/Camera"
             render_product_name = f"RenderProduct_{env_idx}"
-            camera_path = f"/Render/{camera_name}"
             render_product_path = f"/Render/{render_product_name}"
             
             self._render_product_paths.append(render_product_path)
             
-            camera_parts.append(f'''
-    def Camera "{camera_name}" (
-        prepend apiSchemas = ["OmniRtxCameraAutoExposureAPI_1", "OmniRtxCameraExposureAPI_1"]
-    ) {{
-        float focalLength = 18.0
-        float horizontalAperture = 20.955
-        float verticalAperture = 15.2908
-        token projection = "perspective"
-        float2 clippingRange = (1, 10000000)
-        bool omni:rtx:autoExposure:enabled = 1
-        matrix4d xformOp:transform = ( (1,0,0,0), (0,1,0,0), (0,0,1,0), (0,0,0,1) )
-        uniform token[] xformOpOrder = ["xformOp:transform"]
-    }}
-''')
             
             camera_parts.append(f'''
     def RenderProduct "{render_product_name}" (
@@ -406,32 +392,32 @@ class OVRTXRenderer(RendererBase):
         num_envs = camera_positions.shape[0]
         
         # Convert camera orientations from Isaac Lab convention to OpenGL convention
-        camera_quats_converted = convert_camera_frame_orientation_convention(
-            camera_orientations, origin="world", target="opengl"
-        )
-        
-        # Convert torch tensors to warp arrays
-        camera_positions_wp = wp.from_torch(camera_positions.contiguous(), dtype=wp.vec3)
-        camera_orientations_wp = wp.from_torch(camera_quats_converted.contiguous(), dtype=wp.quatf)
-        
-        # Create camera transforms array
-        camera_transforms = wp.zeros(num_envs, dtype=wp.mat44d, device="cuda:0")
-        
-        # Launch kernel to populate transforms
-        wp.launch(
-            kernel=_create_camera_transforms_kernel,
-            dim=num_envs,
-            inputs=[camera_positions_wp, camera_orientations_wp, camera_transforms],
-            device="cuda:0",
-        )
-        
-        # Update camera transforms in the scene using the binding
-        if self._camera_binding is not None:
-            with self._camera_binding.map(device="cuda", device_id=0) as attr_mapping:
-                wp_transforms_view = wp.from_dlpack(attr_mapping.tensor, dtype=wp.mat44d)
-                # Copy our computed transforms to the mapped buffer
-                wp.copy(wp_transforms_view, camera_transforms)
-                # Unmap will commit the changes
+#        camera_quats_converted = convert_camera_frame_orientation_convention(
+#            camera_orientations, origin="world", target="opengl"
+#        )
+#        
+#        # Convert torch tensors to warp arrays
+#        camera_positions_wp = wp.from_torch(camera_positions.contiguous(), dtype=wp.vec3)
+#        camera_orientations_wp = wp.from_torch(camera_quats_converted.contiguous(), dtype=wp.quatf)
+#        
+#        # Create camera transforms array
+#        camera_transforms = wp.zeros(num_envs, dtype=wp.mat44d, device="cuda:0")
+#        
+#        # Launch kernel to populate transforms
+#        wp.launch(
+#            kernel=_create_camera_transforms_kernel,
+#            dim=num_envs,
+#            inputs=[camera_positions_wp, camera_orientations_wp, camera_transforms],
+#            device="cuda:0",
+#        )
+#        
+#        # Update camera transforms in the scene using the binding
+#        if self._camera_binding is not None:
+#            with self._camera_binding.map(device="cuda", device_id=0) as attr_mapping:
+#                wp_transforms_view = wp.from_dlpack(attr_mapping.tensor, dtype=wp.mat44d)
+#                # Copy our computed transforms to the mapped buffer
+#                wp.copy(wp_transforms_view, camera_transforms)
+#                # Unmap will commit the changes
         
         # Step the renderer to produce frames
         # Now we have properly configured render products
