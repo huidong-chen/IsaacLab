@@ -90,6 +90,30 @@ def _create_camera_transforms_kernel(
     )
 
 
+@wp.kernel
+def _sync_newton_transforms_kernel(
+    ovrtx_transforms: wp.array(dtype=wp.mat44d),  # type: ignore
+    newton_body_indices: wp.array(dtype=wp.int32),  # type: ignore
+    newton_body_q: wp.array(dtype=wp.transformf),  # type: ignore
+):
+    """Kernel to sync Newton physics transforms to OVRTX render transforms.
+    
+    Converts Newton's wp.transformf (position + quaternion) to OVRTX's wp.mat44d
+    (4x4 column-major matrix) for each object in the scene.
+    
+    Args:
+        ovrtx_transforms: Output array of OVRTX transforms, shape (num_objects,)
+        newton_body_indices: Newton body indices for each object, shape (num_objects,)
+        newton_body_q: Newton body transforms from state.body_q, shape (num_bodies,)
+    """
+    i = wp.tid()
+    body_idx = newton_body_indices[i]
+    transform = newton_body_q[body_idx]
+    
+    # Use warp's built-in conversion and transpose for column-major format
+    ovrtx_transforms[i] = wp.transpose(wp.mat44d(wp.math.transform_to_matrix(transform)))
+
+
 class OVRTXRenderer(RendererBase):
     """OVRTX Renderer implementation using the ovrtx library.
     
@@ -100,6 +124,8 @@ class OVRTXRenderer(RendererBase):
     _renderer: Renderer | None = None
     _usd_handles: list | None = None
     _camera_binding = None
+    _object_binding = None  # Binding for scene objects (robot, manipulated objects, etc.)
+    _object_newton_indices: wp.array | None = None  # Newton body indices for objects
     _render_product_paths: list[str] = []
     _initialized_scene = False
     _frame_counter: int = 0  # Track frame number for image filenames
@@ -161,6 +187,9 @@ class OVRTXRenderer(RendererBase):
                 print(f"  ✓ Camera binding created successfully")
             else:
                 print(f"  ✗ WARNING: Camera binding is None!")
+            
+            # Setup object bindings for Newton physics sync
+            self._setup_object_bindings()
         else:
             # Setup cameras as root layer
             self._setup_scene(as_root_layer=True)
@@ -231,6 +260,63 @@ class OVRTXRenderer(RendererBase):
         
         print(f"   Created combined USD: {temp_path}")
         return temp_path
+    
+    def _setup_object_bindings(self):
+        """Setup OVRTX bindings for scene objects to sync with Newton physics.
+        
+        This creates bindings for all dynamic objects (robot bodies, manipulated objects)
+        that need to be updated each frame from Newton's physics state.
+        """
+        try:
+            from isaaclab.sim._impl.newton_manager import NewtonManager
+            
+            newton_model = NewtonManager.get_model()
+            if newton_model is None:
+                print("[OVRTX] Newton model not available, skipping object bindings")
+                return
+            
+            # Get all body paths from Newton
+            # Filter out static objects (plane, lights) and cameras
+            all_body_paths = newton_model.body_key
+            
+            # Filter to only dynamic objects in envs
+            # Typically: /World/envs/env_X/Robot/..., /World/envs/env_X/object, etc.
+            object_paths = []
+            newton_indices = []
+            
+            for idx, path in enumerate(all_body_paths):
+                # Include objects in /World/envs/ but exclude cameras and ground plane
+                if "/World/envs/" in path and "Camera" not in path and "GroundPlane" not in path:
+                    object_paths.append(path)
+                    newton_indices.append(idx)
+            
+            if len(object_paths) == 0:
+                print("[OVRTX] No dynamic objects found for binding")
+                return
+            
+            print(f"\n[DEBUG] OVRTX Object Binding Setup:")
+            print(f"  Total dynamic objects: {len(object_paths)}")
+            print(f"  Example paths: {object_paths[:5]}")
+            
+            # Create OVRTX binding for all objects at once
+            self._object_binding = self._renderer.bind_attribute(
+                prim_paths=object_paths,
+                attribute_name="omni:fabric:worldMatrix",
+                semantic="transform_4x4",
+                prim_mode="must_exist",
+            )
+            
+            if self._object_binding is not None:
+                print(f"  ✓ Object binding created successfully")
+                # Store Newton body indices for later lookup
+                self._object_newton_indices = wp.array(newton_indices, dtype=wp.int32, device="cuda:0")
+            else:
+                print(f"  ✗ WARNING: Object binding is None!")
+                
+        except ImportError:
+            print("[OVRTX] Newton not available, skipping object bindings")
+        except Exception as e:
+            print(f"[OVRTX] Error setting up object bindings: {e}")
     
     def add_usd_scene(self, usd_file_path: str, path_prefix: str | None = None):
         """Add a USD scene file to the renderer.
@@ -441,6 +527,9 @@ class OVRTXRenderer(RendererBase):
                 wp.copy(wp_transforms_view, camera_transforms)
                 # Unmap will commit the changes
         
+        # Update object transforms from Newton physics
+        self._update_object_transforms()
+        
         # Step the renderer to produce frames
         # Now we have properly configured render products
         if self._renderer is not None and len(self._render_product_paths) > 0:
@@ -543,6 +632,41 @@ class OVRTXRenderer(RendererBase):
             print(f"\n... ({self._num_envs - 3} more cameras not shown)")
         
         print("\n" + "="*80 + "\n")
+    
+    def _update_object_transforms(self):
+        """Update object transforms from Newton physics state to OVRTX.
+        
+        Syncs all dynamic objects (robot bodies, manipulated objects) from Newton's
+        physics simulation to OVRTX's render state using GPU kernels for efficiency.
+        """
+        if self._object_binding is None or self._object_newton_indices is None:
+            return
+        
+        try:
+            from isaaclab.sim._impl.newton_manager import NewtonManager
+            
+            # Get Newton physics state
+            newton_state = NewtonManager.get_state_0()
+            if newton_state is None:
+                return
+            
+            # Map OVRTX transforms and update from Newton
+            with self._object_binding.map(device="cuda", device_id=0) as attr_mapping:
+                ovrtx_transforms = wp.from_dlpack(attr_mapping.tensor, dtype=wp.mat44d)
+                
+                # Launch kernel to sync transforms
+                wp.launch(
+                    kernel=_sync_newton_transforms_kernel,
+                    dim=len(self._object_newton_indices),
+                    inputs=[ovrtx_transforms, self._object_newton_indices, newton_state.body_q],
+                    device="cuda:0",
+                )
+                # Unmap will commit the changes
+                
+        except Exception as e:
+            # Silently fail to avoid spamming console
+            if self._frame_counter == 1:
+                print(f"[OVRTX] Warning: Failed to update object transforms: {e}")
 
     def _save_image_to_disk(self, rendered_data_wp: wp.array, env_idx: int):
         """Save rendered image to disk.
