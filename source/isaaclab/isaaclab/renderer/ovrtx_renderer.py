@@ -214,20 +214,22 @@ class OVRTXRenderer(RendererBase):
         camera_parts = []
         camera_parts.append('\ndef Scope "Render"\n{\n')
         
-        for env_idx in range(self._num_envs):
-        #for env_idx in range(1): # XXX
-            camera_path = f"/World/envs/env_{env_idx}/Camera"
-            render_product_name = f"RenderProduct_{env_idx}"
-            render_product_path = f"/Render/{render_product_name}"
-            
-            self._render_product_paths.append(render_product_path)
-            
-            
-            camera_parts.append(f'''
+        # Collect all camera paths
+        camera_paths = [f"/World/envs/env_{env_idx}/Camera" for env_idx in range(self._num_envs)]
+        
+        # Create a SINGLE RenderProduct that references all cameras
+        render_product_name = "RenderProduct"
+        render_product_path = f"/Render/{render_product_name}"
+        self._render_product_paths.append(render_product_path)
+        
+        # Build the camera relationship list: rel camera = [<path1>, <path2>, ...]
+        camera_rel_list = ", ".join([f"<{path}>" for path in camera_paths])
+        
+        camera_parts.append(f'''
     def RenderProduct "{render_product_name}" (
         prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1"]
     ) {{
-        rel camera = <{camera_path}>
+        rel camera = [{camera_rel_list}]
         token omni:rtx:background:source:type = "domeLight"
         token omni:rtx:rendermode = "RealTimePathTracing"
         token[] omni:rtx:waitForEvents = ["AllLoadingFinished", "OnlyOnFirstRequest"]
@@ -534,11 +536,11 @@ class OVRTXRenderer(RendererBase):
         self._update_object_transforms()
         
         # Step the renderer to produce frames
-        # Now we have properly configured render products
+        # We now have a single RenderProduct that references all cameras
         print(f"[DEBUG] render_product_paths: {self._render_product_paths}")
         if self._renderer is not None and len(self._render_product_paths) > 0:
             try:
-                # Render using all configured render products
+                # Render using the single render product
                 render_product_set = set(self._render_product_paths)
                 
                 products = self._renderer.step(
@@ -547,38 +549,41 @@ class OVRTXRenderer(RendererBase):
                 )
                 print(f"[DEBUG] Products: {products}")
                 
-                # Extract rendered images from each render product
-                for env_idx, product_path in enumerate(self._render_product_paths):
-                    if env_idx >= self._num_envs:
-                        break
+                # Extract rendered images from the single render product
+                # The product should contain multiple frames, one per camera
+                product_path = self._render_product_paths[0]
+                if product_path in products:
+                    product = products[product_path]
                     
-                    if product_path in products:
-                        product = products[product_path]
+                    # Each frame corresponds to one camera/environment
+                    num_frames = min(len(product.frames), self._num_envs)
+                    print(f"[DEBUG] Number of frames in product: {len(product.frames)}")
+                    
+                    for env_idx in range(num_frames):
+                        frame = product.frames[env_idx]
                         
-                        # Get the first frame from this product
-                        if len(product.frames) > 0:
-                            frame = product.frames[0]
-                            
-                            # Extract LdrColor (RGBA) if available
-                            if "LdrColor" in frame.render_vars:
-                                with frame.render_vars["LdrColor"].map(device="cuda") as mapping:
-                                    rendered_data = wp.from_dlpack(mapping.tensor)
-                                    # Copy to our output buffer for this environment
-                                    wp.copy(self._output_data_buffers["rgba"][env_idx], rendered_data)
-                                    
-                                    # Save image to disk
-                                    self._save_image_to_disk(rendered_data, env_idx)
-                            
-                            # Extract depth if available and configured
-                            # TODO: Add depth RenderVar to the RenderProduct USD definition
-                            # if self._cfg.output_annotators and "depth" in self._cfg.output_annotators:
-                            #     if "distance_to_camera" in frame.render_vars:
-                            #         with frame.render_vars["distance_to_camera"].map(device="cuda") as mapping:
-                            #             depth_data = wp.from_dlpack(mapping.tensor)
-                            #             wp.copy(self._output_data_buffers["depth"][env_idx], depth_data)
+                        # Extract LdrColor (RGBA) if available
+                        if "LdrColor" in frame.render_vars:
+                            with frame.render_vars["LdrColor"].map(device="cuda") as mapping:
+                                rendered_data = wp.from_dlpack(mapping.tensor)
+                                # Copy to our output buffer for this environment
+                                wp.copy(self._output_data_buffers["rgba"][env_idx], rendered_data)
+                                
+                                # Save image to disk
+                                self._save_image_to_disk(rendered_data, env_idx)
+                        
+                        # Extract depth if available and configured
+                        # TODO: Add depth RenderVar to the RenderProduct USD definition
+                        # if self._cfg.output_annotators and "depth" in self._cfg.output_annotators:
+                        #     if "distance_to_camera" in frame.render_vars:
+                        #         with frame.render_vars["distance_to_camera"].map(device="cuda") as mapping:
+                        #             depth_data = wp.from_dlpack(mapping.tensor)
+                        #             wp.copy(self._output_data_buffers["depth"][env_idx], depth_data)
         
             except Exception as e:
                 print(f"Warning: OVRTX rendering failed: {e}")
+                import traceback
+                traceback.print_exc()
                 # Keep the output buffers as-is (zeros from initialization)
 
     def _print_camera_transforms_debug(
