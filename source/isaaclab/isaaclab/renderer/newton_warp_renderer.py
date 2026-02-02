@@ -326,6 +326,9 @@ class NewtonWarpRenderer(RendererBase):
         # Save rendered images to disk
         for env_idx in range(self._num_envs):
             self._save_image_to_disk(self._output_data_buffers["rgba"][env_idx], env_idx)
+        
+        # Save tiled image (all environments in a grid)
+        self._save_tiled_image_to_disk()
 
     def _save_image_to_disk(self, rendered_data_wp: wp.array, env_idx: int):
         """Save rendered image to disk.
@@ -374,6 +377,59 @@ class NewtonWarpRenderer(RendererBase):
                 
         except Exception as e:
             print(f"Warning: Failed to save Newton image for env {env_idx}: {e}")
+    
+    def _save_tiled_image_to_disk(self):
+        """Save tiled image (all environments in a grid) to disk.
+        
+        This creates a single image with all environment views arranged in a grid.
+        """
+        try:
+            # Calculate tiled dimensions
+            tiled_height = self._num_tiles_per_side * self._height
+            tiled_width = self._num_tiles_per_side * self._width
+            
+            # Create tiled output buffer
+            tiled_buffer = wp.zeros(
+                (tiled_height, tiled_width, 4),
+                dtype=wp.uint8,
+                device=self._raw_output_rgb_buffer.device
+            )
+            
+            # Launch kernel to convert raw buffer to tiled format
+            wp.launch(
+                kernel=_convert_raw_rgb_tiled,
+                dim=(tiled_height, tiled_width),
+                inputs=[
+                    self._raw_output_rgb_buffer,
+                    tiled_buffer,
+                    self._width,
+                    self._height,
+                    self._num_tiles_per_side,
+                ],
+                device=self._raw_output_rgb_buffer.device,
+            )
+            
+            # Convert to numpy
+            tiled_data_torch = wp.to_torch(tiled_buffer)
+            tiled_data_np = tiled_data_torch.cpu().numpy()
+            
+            # Create output directory
+            output_dir = Path("newton_rendered_images")
+            output_dir.mkdir(exist_ok=True)
+            
+            # Save as PNG
+            image = Image.fromarray(tiled_data_np, mode='RGBA')
+            output_path = output_dir / f"frame_{self._frame_counter:06d}_tiled.png"
+            image.save(output_path)
+            
+            # Print only for first few frames
+            if self._frame_counter <= 5:
+                print(f"[Newton] Saved tiled image ({self._num_envs} envs in {self._num_tiles_per_side}x{self._num_tiles_per_side} grid): {output_path}")
+                
+        except Exception as e:
+            print(f"Warning: Failed to save Newton tiled image: {e}")
+            import traceback
+            traceback.print_exc()
 
     def step(self):
         """Step the renderer."""
