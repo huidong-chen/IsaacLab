@@ -91,6 +91,38 @@ def _create_camera_transforms_kernel(
 
 
 @wp.kernel
+def _extract_tile_from_tiled_buffer_kernel(
+    tiled_buffer: wp.array(dtype=wp.uint8, ndim=3),  # type: ignore (tiled_height, tiled_width, 4)
+    tile_buffer: wp.array(dtype=wp.uint8, ndim=3),  # type: ignore (height, width, 4)
+    tile_x: int,
+    tile_y: int,
+    tile_width: int,
+    tile_height: int,
+):
+    """Extract a single tile from a tiled buffer.
+    
+    Args:
+        tiled_buffer: Input tiled buffer, shape (tiled_height, tiled_width, 4)
+        tile_buffer: Output buffer for single tile, shape (tile_height, tile_width, 4)
+        tile_x: Tile position in x (horizontal)
+        tile_y: Tile position in y (vertical)
+        tile_width: Width of each tile
+        tile_height: Height of each tile
+    """
+    y, x = wp.tid()
+    
+    # Calculate source position in tiled buffer
+    src_x = tile_x * tile_width + x
+    src_y = tile_y * tile_height + y
+    
+    # Copy RGBA channels
+    tile_buffer[y, x, 0] = tiled_buffer[src_y, src_x, 0]
+    tile_buffer[y, x, 1] = tiled_buffer[src_y, src_x, 1]
+    tile_buffer[y, x, 2] = tiled_buffer[src_y, src_x, 2]
+    tile_buffer[y, x, 3] = tiled_buffer[src_y, src_x, 3]
+
+
+@wp.kernel
 def _sync_newton_transforms_kernel(
     ovrtx_transforms: wp.array(dtype=wp.mat44d),  # type: ignore
     newton_body_indices: wp.array(dtype=wp.int32),  # type: ignore
@@ -135,6 +167,11 @@ class OVRTXRenderer(RendererBase):
         self._usd_handles = []
         self._render_product_paths = []
         self._frame_counter = 0
+        
+        # Calculate tiled dimensions (same as Newton renderer)
+        self._num_tiles_per_side = math.ceil(math.sqrt(self._num_envs))
+        self._tiled_width = self._num_tiles_per_side * self._width
+        self._tiled_height = self._num_tiles_per_side * self._height
 
     def initialize(self, usd_scene_path: str | None = None):
         """Initialize the OVRTX renderer.
@@ -225,6 +262,13 @@ class OVRTXRenderer(RendererBase):
         # Build the camera relationship list: rel camera = [<path1>, <path2>, ...]
         camera_rel_list = ", ".join([f"<{path}>" for path in camera_paths])
         
+        # Calculate tiled resolution: each tile is width x height, arranged in a grid
+        print(f"\n[DEBUG] OvRTX Tiled Resolution:")
+        print(f"  Individual camera resolution: {self._width} x {self._height}")
+        print(f"  Number of environments: {self._num_envs}")
+        print(f"  Tiles per side: {self._num_tiles_per_side}")
+        print(f"  Total tiled resolution: {self._tiled_width} x {self._tiled_height}")
+        
         camera_parts.append(f'''
     def RenderProduct "{render_product_name}" (
         prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1"]
@@ -234,7 +278,7 @@ class OVRTXRenderer(RendererBase):
         token omni:rtx:rendermode = "RealTimePathTracing"
         token[] omni:rtx:waitForEvents = ["AllLoadingFinished", "OnlyOnFirstRequest"]
         rel orderedVars = </Render/Vars/LdrColor>
-        uniform int2 resolution = ({self._width}, {self._height})
+        uniform int2 resolution = ({self._tiled_width}, {self._tiled_height})
     }}
 ''')
         
@@ -536,7 +580,7 @@ class OVRTXRenderer(RendererBase):
         self._update_object_transforms()
         
         # Step the renderer to produce frames
-        # We now have a single RenderProduct that references all cameras
+        # We now have a single RenderProduct that references all cameras and outputs a tiled image
         print(f"[DEBUG] render_product_paths: {self._render_product_paths}")
         if self._renderer is not None and len(self._render_product_paths) > 0:
             try:
@@ -550,27 +594,47 @@ class OVRTXRenderer(RendererBase):
                 print(f"[DEBUG] Products: {products}")
                 
                 # Extract rendered images from the single render product
-                # The product should contain multiple frames, one per camera
+                # The product should contain a single tiled frame
                 product_path = self._render_product_paths[0]
                 if product_path in products:
                     product = products[product_path]
                     
-                    # Each frame corresponds to one camera/environment
-                    num_frames = min(len(product.frames), self._num_envs)
-                    print(f"[DEBUG] Number of frames in product: {len(product.frames)}")
-                    
-                    for env_idx in range(num_frames):
-                        frame = product.frames[env_idx]
+                    if len(product.frames) > 0:
+                        frame = product.frames[0]
+                        print(f"[DEBUG] Frame has {len(product.frames)} frame(s)")
                         
-                        # Extract LdrColor (RGBA) if available
+                        # Extract LdrColor (RGBA) if available - this is the tiled image
                         if "LdrColor" in frame.render_vars:
                             with frame.render_vars["LdrColor"].map(device="cuda") as mapping:
-                                rendered_data = wp.from_dlpack(mapping.tensor)
-                                # Copy to our output buffer for this environment
-                                wp.copy(self._output_data_buffers["rgba"][env_idx], rendered_data)
+                                tiled_data = wp.from_dlpack(mapping.tensor)
+                                print(f"[DEBUG] Tiled data shape: {tiled_data.shape}")
                                 
-                                # Save image to disk
-                                self._save_image_to_disk(rendered_data, env_idx)
+                                # Save the full tiled image
+                                self._save_tiled_image_to_disk(tiled_data)
+                                
+                                # Extract individual tiles for each environment
+                                for env_idx in range(self._num_envs):
+                                    # Calculate tile position in grid
+                                    tile_x = env_idx % self._num_tiles_per_side
+                                    tile_y = env_idx // self._num_tiles_per_side
+                                    
+                                    # Extract this tile using kernel
+                                    wp.launch(
+                                        kernel=_extract_tile_from_tiled_buffer_kernel,
+                                        dim=(self._height, self._width),
+                                        inputs=[
+                                            tiled_data,
+                                            self._output_data_buffers["rgba"][env_idx],
+                                            tile_x,
+                                            tile_y,
+                                            self._width,
+                                            self._height,
+                                        ],
+                                        device="cuda:0",
+                                    )
+                                    
+                                    # Save individual image
+                                    self._save_image_to_disk(self._output_data_buffers["rgba"][env_idx], env_idx)
                         
                         # Extract depth if available and configured
                         # TODO: Add depth RenderVar to the RenderProduct USD definition
@@ -578,7 +642,7 @@ class OVRTXRenderer(RendererBase):
                         #     if "distance_to_camera" in frame.render_vars:
                         #         with frame.render_vars["distance_to_camera"].map(device="cuda") as mapping:
                         #             depth_data = wp.from_dlpack(mapping.tensor)
-                        #             wp.copy(self._output_data_buffers["depth"][env_idx], depth_data)
+                        #             # Extract tiles for depth as well
         
             except Exception as e:
                 print(f"Warning: OVRTX rendering failed: {e}")
@@ -723,6 +787,39 @@ class OVRTXRenderer(RendererBase):
                 
         except Exception as e:
             print(f"Warning: Failed to save image for env {env_idx}: {e}")
+    
+    def _save_tiled_image_to_disk(self, tiled_data_wp: wp.array):
+        """Save tiled image (all environments in a grid) to disk.
+        
+        Args:
+            tiled_data_wp: Warp array containing tiled RGBA data, shape (tiled_height, tiled_width, 4)
+        """
+        try:
+            # Convert warp array to torch tensor, then to numpy
+            tiled_data_torch = wp.to_torch(tiled_data_wp)
+            tiled_data_np = tiled_data_torch.cpu().numpy()
+            
+            # Convert from float [0, 1] to uint8 [0, 255]
+            if tiled_data_np.dtype in [np.float32, np.float64]:
+                tiled_data_np = (tiled_data_np * 255).astype(np.uint8)
+            
+            # Create output directory if it doesn't exist
+            output_dir = Path("ovrtx_rendered_images")
+            output_dir.mkdir(exist_ok=True)
+            
+            # Save as PNG
+            image = Image.fromarray(tiled_data_np, mode='RGBA')
+            output_path = output_dir / f"frame_{self._frame_counter:06d}_tiled.png"
+            image.save(output_path)
+            
+            # Print only for first few frames
+            if self._frame_counter <= 5:
+                print(f"[OVRTX] Saved tiled image ({self._num_envs} envs in {self._num_tiles_per_side}x{self._num_tiles_per_side} grid): {output_path}")
+                
+        except Exception as e:
+            print(f"Warning: Failed to save tiled image: {e}")
+            import traceback
+            traceback.print_exc()
 
     def step(self):
         """Step the renderer."""
