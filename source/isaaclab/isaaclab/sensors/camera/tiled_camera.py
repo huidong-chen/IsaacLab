@@ -187,6 +187,11 @@ class TiledCamera(Camera):
             self._renderer.initialize(usd_scene_path=export_path)
             print("initiaized renderer (ovrtx)")
 
+            export_path = "/tmp/stage_after_ovrtx.usda"
+            print(f"[DEBUG] Exporting USD stage to: {export_path}")
+            self.stage.Export(export_path)
+            print(f"[DEBUG] Stage exported successfully!")
+
         else:
             raise ValueError(f"Renderer type '{self.cfg.renderer_type}' is not supported.")
 

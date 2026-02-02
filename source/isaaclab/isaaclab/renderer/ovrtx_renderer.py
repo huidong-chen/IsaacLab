@@ -23,12 +23,12 @@ if libcarb_path.exists() and "LD_PRELOAD" not in os.environ:
     os.environ["LD_PRELOAD"] = str(libcarb_path)
 
 # Add ovrtx Python bindings to path
-ovrtx_bindings_path = Path("/home/ncournia/dev/kit.0/rendering/source/bindings/python")
+ovrtx_bindings_path = Path("/home/ncournia/dev/kit.0/rendering/ovrtx/public/bindings/python")
 if str(ovrtx_bindings_path) not in sys.path:
     sys.path.insert(0, str(ovrtx_bindings_path))
 
 # Set library path hint before importing ovrtx
-import ovrtx._src.bindings as bindings
+from ovrtx._src import bindings
 bindings.OVRTX_LIBRARY_PATH_HINT = "/home/ncournia/dev/kit.0/rendering/_build/linux-x86_64/release"
 
 from ovrtx import Renderer, RendererConfig
@@ -173,7 +173,7 @@ class OVRTXRenderer(RendererBase):
             
             print(f"\n[DEBUG] OVRTX Camera Binding Setup:")
             print(f"  Total cameras: {self._num_envs}")
-            print(f"  Example camera paths: {camera_paths[:3]}")
+            print(f"  Camera paths: {camera_paths}")
             print(f"  Binding to attribute: omni:fabric:worldMatrix")
             
             self._camera_binding = self._renderer.bind_attribute(
@@ -192,7 +192,8 @@ class OVRTXRenderer(RendererBase):
             self._setup_object_bindings()
         else:
             # Setup cameras as root layer
-            self._setup_scene(as_root_layer=True)
+            #self._setup_scene(as_root_layer=True)
+            pass
     
     def _inject_cameras_into_usd(self, usd_scene_path: str) -> str:
         """Inject camera and render product definitions into an existing USD file.
@@ -214,6 +215,7 @@ class OVRTXRenderer(RendererBase):
         camera_parts.append('\ndef Scope "Render"\n{\n')
         
         for env_idx in range(self._num_envs):
+        #for env_idx in range(1): # XXX
             camera_path = f"/World/envs/env_{env_idx}/Camera"
             render_product_name = f"RenderProduct_{env_idx}"
             render_product_path = f"/Render/{render_product_name}"
@@ -358,120 +360,121 @@ class OVRTXRenderer(RendererBase):
             (self._num_envs, self._height, self._width, 1), dtype=wp.float32, device="cuda:0"
         )
 
-    def _setup_scene(self, as_root_layer: bool = True):
-        """Set up the USD scene with cameras and render products.
-        
-        This creates a USD scene with camera definitions and their corresponding
-        RenderProduct prims according to the OVRTX requirements.
-        
-        Args:
-            as_root_layer: If True, creates cameras as root layer with 'def Scope "Render"'.
-                          If False, creates cameras as sublayer with 'over "Render"'.
-                          Use False when a USD scene has already been loaded as root layer.
-        """
-        if self._initialized_scene:
-            return
-            
-        print("Setting up OVRTX scene...")
-        
-        # Create a USD layer with cameras and render products
-        usda_parts = []
-        
-        if as_root_layer:
-            # Creating as root layer: must set defaultPrim and use 'def'
-            usda_parts.append('#usda 1.0\n')
-            usda_parts.append('(\n    defaultPrim = "Render"\n)\n\n')
-            usda_parts.append('def Scope "Render" {\n')
-        else:
-            # Creating as sublayer: NO header, use 'over' to extend existing scene
-            # The header would make this a root layer!
-            usda_parts.append('over "Render" {\n')
-        
-        # Create cameras and render products for each environment
-        for env_idx in range(self._num_envs):
-            camera_name = f"Camera_{env_idx}"
-            render_product_name = f"RenderProduct_{env_idx}"
-            camera_path = f"/Render/{camera_name}"
-            render_product_path = f"/Render/{render_product_name}"
-            
-            # Store render product path for later use
-            self._render_product_paths.append(render_product_path)
-            
-            # Camera definition with RTX API schemas
-            usda_parts.append(f'''
-    def Camera "{camera_name}" (
-        prepend apiSchemas = ["OmniRtxCameraAutoExposureAPI_1", "OmniRtxCameraExposureAPI_1"]
-    ) {{
-        float focalLength = 18.0
-        float horizontalAperture = 20.955
-        float verticalAperture = 15.2908
-        token projection = "perspective"
-        float2 clippingRange = (1, 10000000)
-        bool omni:rtx:autoExposure:enabled = 1
-        matrix4d xformOp:transform = ( (1,0,0,0), (0,1,0,0), (0,0,1,0), (0,0,0,1) )
-        uniform token[] xformOpOrder = ["xformOp:transform"]
-    }}
-''')
-            
-            # RenderProduct definition with RTX settings
-            usda_parts.append(f'''
-    def RenderProduct "{render_product_name}" (
-        prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1"]
-    ) {{
-        rel camera = <{camera_path}>
-        token omni:rtx:background:source:type = "domeLight"
-        token omni:rtx:rendermode = "RealTimePathTracing"
-        token[] omni:rtx:waitForEvents = ["AllLoadingFinished", "OnlyOnFirstRequest"]
-        rel orderedVars = </Render/Vars/LdrColor>
-        uniform int2 resolution = ({self._width}, {self._height})
-    }}
-''')
-        
-        # Add shared RenderVar if it doesn't exist
-        usda_parts.append('''
-    def "Vars"
-    {
-        def RenderVar "LdrColor"
-        {
-            uniform string sourceName = "LdrColor"
-        }
-    }
-''')
-        
-        usda_parts.append('}\n')
-        usda_content = ''.join(usda_parts)
-        
-        # Add the USD to the renderer
-        if self._renderer is not None:
-            if as_root_layer:
-                # Save to temp file and use add_usd for root layer
-                import tempfile
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.usda', delete=False) as f:
-                    f.write(usda_content)
-                    temp_path = f.name
-                handle = self._renderer.add_usd(temp_path, path_prefix=None)
-                # Clean up temp file
-                Path(temp_path).unlink()
-            else:
-                # Use add_usd_layer for sublayer
-                handle = self._renderer.add_usd_layer(usda_content, path_prefix=None)
-            
-            if self._usd_handles is not None:
-                self._usd_handles.append(handle)
-        
-        # Create binding for camera transforms (all cameras at once)
-        camera_paths = [f"/Render/Camera_{i}" for i in range(self._num_envs)]
-        if self._renderer is not None:
-            self._camera_binding = self._renderer.bind_attribute(
-                prim_paths=camera_paths,
-                attribute_name="omni:fabric:worldMatrix",
-                semantic="transform_4x4",
-                prim_mode="must_exist",
-            )
-        
-        self._initialized_scene = True
-        print(f"OVRTX scene setup complete: {self._num_envs} cameras and render products created")
-        print(f"Render product paths: {self._render_product_paths[:3]}{'...' if self._num_envs > 3 else ''}")
+###    def _setup_scene(self, as_root_layer: bool = True):
+###        """Set up the USD scene with cameras and render products.
+###        
+###        This creates a USD scene with camera definitions and their corresponding
+###        RenderProduct prims according to the OVRTX requirements.
+###        
+###        Args:
+###            as_root_layer: If True, creates cameras as root layer with 'def Scope "Render"'.
+###                          If False, creates cameras as sublayer with 'over "Render"'.
+###                          Use False when a USD scene has already been loaded as root layer.
+###        """
+###        if self._initialized_scene:
+###            return
+###            
+###        print("Setting up OVRTX scene...")
+###        
+###        # Create a USD layer with cameras and render products
+###        usda_parts = []
+###        
+###        if as_root_layer:
+###            # Creating as root layer: must set defaultPrim and use 'def'
+###            usda_parts.append('#usda 1.0\n')
+###            usda_parts.append('(\n    defaultPrim = "Render"\n)\n\n')
+###            usda_parts.append('def Scope "Render" {\n')
+###        else:
+###            # Creating as sublayer: NO header, use 'over' to extend existing scene
+###            # The header would make this a root layer!
+###            usda_parts.append('over "Render" {\n')
+###        
+###        # Create cameras and render products for each environment
+###        for env_idx in range(self._num_envs):
+###            camera_name = f"Camera_{env_idx}"
+###            render_product_name = f"RenderProduct_{env_idx}"
+###            camera_path = f"/Render/{camera_name}"
+###            render_product_path = f"/Render/{render_product_name}"
+###            
+###            # Store render product path for later use
+###            if env_idx == 1: # XXX
+###                self._render_product_paths.append(render_product_path)
+###            
+###            # Camera definition with RTX API schemas
+###            usda_parts.append(f'''
+###    def Camera "{camera_name}" (
+###        prepend apiSchemas = ["OmniRtxCameraAutoExposureAPI_1", "OmniRtxCameraExposureAPI_1"]
+###    ) {{
+###        float focalLength = 18.0
+###        float horizontalAperture = 20.955
+###        float verticalAperture = 15.2908
+###        token projection = "perspective"
+###        float2 clippingRange = (1, 10000000)
+###        bool omni:rtx:autoExposure:enabled = 1
+###        matrix4d xformOp:transform = ( (1,0,0,0), (0,1,0,0), (0,0,1,0), (0,0,0,1) )
+###        uniform token[] xformOpOrder = ["xformOp:transform"]
+###    }}
+###''')
+###            
+###            # RenderProduct definition with RTX settings
+###            usda_parts.append(f'''
+###    def RenderProduct "{render_product_name}" (
+###        prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1"]
+###    ) {{
+###        rel camera = <{camera_path}>
+###        token omni:rtx:background:source:type = "domeLight"
+###        token omni:rtx:rendermode = "RealTimePathTracing"
+###        token[] omni:rtx:waitForEvents = ["AllLoadingFinished", "OnlyOnFirstRequest"]
+###        rel orderedVars = </Render/Vars/LdrColor>
+###        uniform int2 resolution = ({self._width}, {self._height})
+###    }}
+###''')
+###        
+###        # Add shared RenderVar if it doesn't exist
+###        usda_parts.append('''
+###    def "Vars"
+###    {
+###        def RenderVar "LdrColor"
+###        {
+###            uniform string sourceName = "LdrColor"
+###        }
+###    }
+###''')
+###        
+###        usda_parts.append('}\n')
+###        usda_content = ''.join(usda_parts)
+###        
+###        # Add the USD to the renderer
+###        if self._renderer is not None:
+###            if as_root_layer:
+###                # Save to temp file and use add_usd for root layer
+###                import tempfile
+###                with tempfile.NamedTemporaryFile(mode='w', suffix='.usda', delete=False) as f:
+###                    f.write(usda_content)
+###                    temp_path = f.name
+###                handle = self._renderer.add_usd(temp_path, path_prefix=None)
+###                # Clean up temp file
+###                Path(temp_path).unlink()
+###            else:
+###                # Use add_usd_layer for sublayer
+###                handle = self._renderer.add_usd_layer(usda_content, path_prefix=None)
+###            
+###            if self._usd_handles is not None:
+###                self._usd_handles.append(handle)
+###        
+###        # Create binding for camera transforms (all cameras at once)
+###        camera_paths = [f"/Render/Camera_{i}" for i in range(self._num_envs)]
+###        if self._renderer is not None:
+###            self._camera_binding = self._renderer.bind_attribute(
+###                prim_paths=camera_paths,
+###                attribute_name="omni:fabric:worldMatrix",
+###                semantic="transform_4x4",
+###                prim_mode="must_exist",
+###            )
+###        
+###        self._initialized_scene = True
+###        print(f"OVRTX scene setup complete: {self._num_envs} cameras and render products created")
+###        print(f"Render product paths: {self._render_product_paths[:3]}{'...' if self._num_envs > 3 else ''}")
 
     def render(self, camera_positions: torch.Tensor, camera_orientations: torch.Tensor, intrinsic_matrices: torch.Tensor):
         """Render the scene using OVRTX.
@@ -532,6 +535,7 @@ class OVRTXRenderer(RendererBase):
         
         # Step the renderer to produce frames
         # Now we have properly configured render products
+        print(f"[DEBUG] render_product_paths: {self._render_product_paths}")
         if self._renderer is not None and len(self._render_product_paths) > 0:
             try:
                 # Render using all configured render products
@@ -541,6 +545,7 @@ class OVRTXRenderer(RendererBase):
                     render_products=render_product_set, 
                     delta_time=1.0/60.0
                 )
+                print(f"[DEBUG] Products: {products}")
                 
                 # Extract rendered images from each render product
                 for env_idx, product_path in enumerate(self._render_product_paths):
