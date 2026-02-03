@@ -181,16 +181,47 @@ class TiledCamera(Camera):
                 raise RuntimeError(f"Failed to load renderer class for type '{self.cfg.renderer_type}'.")
             self._renderer = renderer_cls(renderer_cfg)
             
-            # EXPORT STAGE TO USD FILE RIGHT BEFORE RENDERER INITIALIZATION
-            export_path = "/tmp/stage_before_ovrtx.usda"
-            print(f"[DEBUG] Exporting USD stage to: {export_path}")
-            self.stage.Export(export_path)
-            print(f"[DEBUG] Stage exported successfully!")
+            # OPTIMIZATION: Deactivate cloned environments BEFORE export
+            # This dramatically reduces file size and export time
+            deactivated_prims = []
+            if self._num_envs > 1:
+                print(f"[TILED_CAMERA] Deactivating {self._num_envs - 1} environments for OvRTX export...")
+                for env_idx in range(1, self._num_envs):
+                    env_prim = self.stage.GetPrimAtPath(f"/World/envs/env_{env_idx}")
+                    if env_prim.IsValid() and env_prim.IsActive():
+                        env_prim.SetActive(False)
+                        deactivated_prims.append(env_prim)
+                print(f"   ✓ Deactivated {len(deactivated_prims)} environments")
             
-            # Note: Don't pass stage parameter - views are already created, 
-            # so we can't use the deactivation optimization safely
+            try:
+                # EXPORT STAGE TO USD FILE (now with only base environment!)
+                export_path = "/tmp/stage_before_ovrtx.usda"
+                print(f"[TILED_CAMERA] Exporting {'base environment only' if deactivated_prims else 'stage'} to: {export_path}")
+                self.stage.Export(export_path)
+                print(f"   ✓ Stage exported successfully")
+                
+            finally:
+                # CRITICAL: Reactivate environments IMMEDIATELY after export
+                if deactivated_prims:
+                    print(f"[TILED_CAMERA] Reactivating {len(deactivated_prims)} environments...")
+                    for prim in deactivated_prims:
+                        if prim.IsValid():
+                            prim.SetActive(True)
+                    print(f"   ✓ Environments reactivated")
+                    
+                    # CRITICAL: Recreate view after reactivation to refresh internal state
+                    print(f"[TILED_CAMERA] Recreating view to refresh after reactivation...")
+                    self._view = XFormPrim(self.cfg.prim_path, device=self._device)
+                    if self._view.count != self._num_envs:
+                        raise RuntimeError(
+                            f"View count mismatch after recreation: {self._view.count} != {self._num_envs}"
+                        )
+                    print(f"   ✓ View recreated with {self._view.count} prims")
+            
+            # Initialize renderer with filtered USD file
+            # Renderer will clone environments internally using OvRTX clone_usd()
             self._renderer.initialize(usd_scene_path=export_path)
-            print("initiaized renderer (ovrtx)")
+            print("   ✓ Renderer initialized")
 
         else:
             raise ValueError(f"Renderer type '{self.cfg.renderer_type}' is not supported.")
