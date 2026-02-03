@@ -148,6 +148,11 @@ class NewtonWarpRenderer(RendererBase):
 
     def initialize(self):
         """Initialize the renderer."""
+        # Log USD version info for debugging
+        from pxr import Usd
+        print(f"[NEWTON] USD Version: {Usd.GetVersion()}")
+        print(f"[NEWTON] USD Module: {Usd.__file__}")
+        
         self._model = NewtonManager.get_model()
 
         self._tiled_camera_sensor = TiledCameraSensor(

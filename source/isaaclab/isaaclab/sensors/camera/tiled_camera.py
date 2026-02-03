@@ -150,6 +150,9 @@ class TiledCamera(Camera):
                 f"Number of camera prims in the view ({self._view.count}) does not match"
                 f" the number of environments ({self._num_envs})."
             )
+        
+        # Store reference to stage for renderer export
+        self._stage_for_export = self.stage
 
         if self.cfg.renderer_type == "newton_warp":
             renderer_cfg = NewtonWarpRendererCfg(
@@ -184,13 +187,10 @@ class TiledCamera(Camera):
             self.stage.Export(export_path)
             print(f"[DEBUG] Stage exported successfully!")
             
+            # Note: Don't pass stage parameter - views are already created, 
+            # so we can't use the deactivation optimization safely
             self._renderer.initialize(usd_scene_path=export_path)
             print("initiaized renderer (ovrtx)")
-
-            export_path = "/tmp/stage_after_ovrtx.usda"
-            print(f"[DEBUG] Exporting USD stage to: {export_path}")
-            self.stage.Export(export_path)
-            print(f"[DEBUG] Stage exported successfully!")
 
         else:
             raise ValueError(f"Renderer type '{self.cfg.renderer_type}' is not supported.")

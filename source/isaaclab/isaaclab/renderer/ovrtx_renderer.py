@@ -173,6 +173,44 @@ class OVRTXRenderer(RendererBase):
         self._tiled_width = self._num_tiles_per_side * self._width
         self._tiled_height = self._num_tiles_per_side * self._height
 
+    def _create_filtered_usd_file(self, source_usd_path: str) -> str:
+        """Create a filtered USD file with only env_0 active.
+        
+        Opens the source USD file as a temporary stage, deactivates cloned environments,
+        and exports to a new file. This avoids touching the main Isaac Sim stage.
+        
+        Args:
+            source_usd_path: Path to source USD file (with all environments)
+            
+        Returns:
+            Path to filtered USD file (with only env_0)
+        """
+        from pxr import Usd
+        
+        print(f"[OVRTX OPTIMIZE] Creating filtered USD with only base environment...")
+        
+        # Open source file as temporary stage (doesn't affect Isaac Sim stage!)
+        temp_stage = Usd.Stage.Open(source_usd_path)
+        
+        # Deactivate cloned environments in temp stage
+        for env_idx in range(1, self._num_envs):
+            env_path = f"/World/envs/env_{env_idx}"
+            prim = temp_stage.GetPrimAtPath(env_path)
+            if prim.IsValid() and prim.IsActive():
+                prim.SetActive(False)
+                if env_idx <= 3 or env_idx == self._num_envs - 1:
+                    print(f"  Deactivated: {env_path}")
+        
+        if self._num_envs > 5:
+            print(f"  ... (deactivated {self._num_envs - 1} environments total)")
+        
+        # Export filtered stage to new file
+        filtered_path = "/tmp/stage_base_env_only.usda"
+        temp_stage.Export(filtered_path)
+        print(f"  ✓ Filtered USD exported to: {filtered_path}")
+        
+        return filtered_path
+    
     def _deactivate_cloned_envs(self, stage) -> list:
         """Deactivate all cloned environments (env_1 onwards) to exclude from export.
         
@@ -243,20 +281,26 @@ class OVRTXRenderer(RendererBase):
         """Initialize the OVRTX renderer with environment cloning optimization.
         
         Optimization workflow:
-        1. Deactivate all cloned environments (env_1 ... env_N-1)
-        2. Export stage with only base environment (env_0) active
-        3. Load single environment into OvRTX (fast: O(1))
-        4. Use OvRTX clone_usd() to replicate environments (fast: O(1) or O(log N))
-        5. Reactivate cloned environments in Isaac Sim
+        1. Open exported USD file as temporary stage (doesn't affect Isaac Sim!)
+        2. Deactivate all cloned environments (env_1 ... env_N-1) in temp stage
+        3. Export temp stage to new file (only base environment)
+        4. Load single environment into OvRTX (fast: O(1))
+        5. Use OvRTX clone_usd() to replicate environments (fast: O(1) or O(log N))
         
         This approach is ~10-100x faster than loading all N environments from USD,
-        especially beneficial for 50+ environments.
+        especially beneficial for 50+ environments. Crucially, it never touches the
+        Isaac Sim stage, so views remain valid.
         
         Args:
             usd_scene_path: Optional path to USD scene to load as root layer.
                            If provided, cameras will be injected into this file.
                            If not provided, cameras are created as the root layer.
         """
+        # Log USD version info for debugging
+        from pxr import Usd
+        print(f"[OVRTX] USD Version: {Usd.GetVersion()}")
+        print(f"[OVRTX] USD Module: {Usd.__file__}")
+        
         print("Creating OVRTX renderer...")
         OVRTX_CONFIG = RendererConfig(
             startup_options={
@@ -275,41 +319,30 @@ class OVRTXRenderer(RendererBase):
         # If a USD scene is provided, use cloning optimization
         if usd_scene_path is not None:
             from pxr import Usd
-            from isaaclab.sim.utils.stage import get_current_stage
             
-            # Get current stage for deactivation
-            stage = get_current_stage()
-            
-            # Optimization: Deactivate cloned environments before export
-            # This dramatically speeds up USD export and OvRTX loading
-            deactivated_prims = []
+            # Use cloning optimization for multiple environments
             if self._num_envs > 1:
-                deactivated_prims = self._deactivate_cloned_envs(stage)
+                print(f"[OVRTX] Using environment cloning optimization for {self._num_envs} environments")
+                
+                # Create filtered USD file (only env_0) without touching Isaac Sim stage
+                filtered_usd_path = self._create_filtered_usd_file(usd_scene_path)
+                
+                # Use filtered file instead of full file
+                usd_scene_path = filtered_usd_path
             
-            try:
-                # Export stage with only base environment (env_0)
-                base_env_export_path = "/tmp/stage_base_env_only.usda"
-                print(f"[OVRTX OPTIMIZE] Exporting base environment to: {base_env_export_path}")
-                stage.Export(base_env_export_path)
-                
-                # Inject cameras into exported USD (only env_0 camera for now)
-                print(f"[OVRTX OPTIMIZE] Injecting camera definitions...")
-                combined_usd_path = self._inject_cameras_into_usd(base_env_export_path)
-                
-                # Load base environment into OvRTX (fast: only one environment!)
-                print(f"[OVRTX OPTIMIZE] Loading base environment into OvRTX...")
-                handle = self._renderer.add_usd(combined_usd_path, path_prefix=None)
-                self._usd_handles.append(handle)
-                print(f"   ✓ Base environment loaded (handle: {handle})")
-                
-                # Clone base environment to all other environments in OvRTX
-                if self._num_envs > 1:
-                    self._clone_environments_in_ovrtx()
-                
-            finally:
-                # Always reactivate cloned environments in Isaac Sim
-                if deactivated_prims:
-                    self._reactivate_prims(deactivated_prims)
+            # Inject cameras into USD
+            print(f"[OVRTX] Injecting camera definitions...")
+            combined_usd_path = self._inject_cameras_into_usd(usd_scene_path)
+            
+            # Load environment into OvRTX
+            print(f"[OVRTX] Loading environment into OvRTX...")
+            handle = self._renderer.add_usd(combined_usd_path, path_prefix=None)
+            self._usd_handles.append(handle)
+            print(f"   ✓ Environment loaded (handle: {handle})")
+            
+            # Clone base environment to all other environments in OvRTX
+            if self._num_envs > 1:
+                self._clone_environments_in_ovrtx()
             
             self._initialized_scene = True
             
