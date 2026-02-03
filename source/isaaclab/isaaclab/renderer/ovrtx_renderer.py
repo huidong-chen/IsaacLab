@@ -123,6 +123,35 @@ def _extract_tile_from_tiled_buffer_kernel(
 
 
 @wp.kernel
+def _extract_depth_tile_from_tiled_buffer_kernel(
+    tiled_buffer: wp.array(dtype=wp.float32, ndim=2),  # type: ignore (tiled_height, tiled_width)
+    tile_buffer: wp.array(dtype=wp.float32, ndim=3),  # type: ignore (height, width, 1)
+    tile_x: int,
+    tile_y: int,
+    tile_width: int,
+    tile_height: int,
+):
+    """Extract a single depth tile from a tiled depth buffer.
+    
+    Args:
+        tiled_buffer: Input tiled depth buffer, shape (tiled_height, tiled_width)
+        tile_buffer: Output buffer for single tile, shape (tile_height, tile_width, 1)
+        tile_x: Tile position in x (horizontal)
+        tile_y: Tile position in y (vertical)
+        tile_width: Width of each tile
+        tile_height: Height of each tile
+    """
+    y, x = wp.tid()
+    
+    # Calculate source position in tiled buffer
+    src_x = tile_x * tile_width + x
+    src_y = tile_y * tile_height + y
+    
+    # Copy depth value
+    tile_buffer[y, x, 0] = tiled_buffer[src_y, src_x]
+
+
+@wp.kernel
 def _sync_newton_transforms_kernel(
     ovrtx_transforms: wp.array(dtype=wp.mat44d),  # type: ignore
     newton_body_indices: wp.array(dtype=wp.int32),  # type: ignore
@@ -172,6 +201,16 @@ class OVRTXRenderer(RendererBase):
         self._num_tiles_per_side = math.ceil(math.sqrt(self._num_envs))
         self._tiled_width = self._num_tiles_per_side * self._width
         self._tiled_height = self._num_tiles_per_side * self._height
+        
+        # Store data types from config
+        # Handle MISSING sentinel value from dataclasses
+        from dataclasses import MISSING as DATACLASS_MISSING, _MISSING_TYPE
+        if (hasattr(cfg, 'data_types') and 
+            not isinstance(cfg.data_types, _MISSING_TYPE) and 
+            cfg.data_types):
+            self._data_types = cfg.data_types
+        else:
+            self._data_types = ["rgb"]
 
     def _deactivate_cloned_envs(self, stage) -> list:
         """Deactivate all cloned environments (env_1 onwards) to exclude from export.
@@ -289,9 +328,15 @@ class OVRTXRenderer(RendererBase):
             combined_usd_path = self._inject_cameras_into_usd(usd_scene_path)
             
             print(f"[OVRTX] Loading USD into OvRTX...")
-            handle = self._renderer.add_usd(combined_usd_path, path_prefix=None)
-            self._usd_handles.append(handle)
-            print(f"   ✓ USD loaded (handle: {handle})")
+            try:
+                handle = self._renderer.add_usd(combined_usd_path, path_prefix=None)
+                self._usd_handles.append(handle)
+                print(f"   ✓ USD loaded (handle: {handle})")
+            except Exception as e:
+                print(f"   ✗ ERROR loading USD: {e}")
+                import traceback
+                traceback.print_exc()
+                raise
             
             # Clone base environment to all other environments in OvRTX
             if self._num_envs > 1:
@@ -363,6 +408,22 @@ class OVRTXRenderer(RendererBase):
         print(f"  Tiles per side: {self._num_tiles_per_side}")
         print(f"  Total tiled resolution: {self._tiled_width} x {self._tiled_height}")
         
+        # Determine which RenderVar to use based on requested data types
+        # Priority: depth types > rgb types (to save rendering time when only depth is needed)
+        use_depth = any(dt in ["depth", "distance_to_image_plane", "distance_to_camera"] for dt in self._data_types)
+        use_rgb = any(dt in ["rgb", "rgba"] for dt in self._data_types)
+        
+        # If both are requested, we need both (for now, default to LdrColor)
+        # In the future, we could render both but that would require multiple RenderProducts or orderedVars
+        if use_depth and not use_rgb:
+            render_var_path = "/Render/Vars/depth"
+            render_var_name = "depth"
+            print(f"  Rendering mode: depth only")
+        else:
+            render_var_path = "/Render/Vars/LdrColor"
+            render_var_name = "LdrColor"
+            print(f"  Rendering mode: RGB/RGBA")
+        
         camera_parts.append(f'''
     def RenderProduct "{render_product_name}" (
         prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1"]
@@ -371,18 +432,23 @@ class OVRTXRenderer(RendererBase):
         token omni:rtx:background:source:type = "domeLight"
         token omni:rtx:rendermode = "RealTimePathTracing"
         token[] omni:rtx:waitForEvents = ["AllLoadingFinished", "OnlyOnFirstRequest"]
-        rel orderedVars = </Render/Vars/LdrColor>
+        rel orderedVars = <{render_var_path}>
         uniform int2 resolution = ({self._tiled_width}, {self._tiled_height})
     }}
 ''')
         
-        # Add shared RenderVar
+        # Add RenderVars (create both, but only one will be used based on orderedVars)
         camera_parts.append('''
     def "Vars"
     {
         def RenderVar "LdrColor"
         {
             uniform string sourceName = "LdrColor"
+        }
+        
+        def RenderVar "depth"
+        {
+            uniform string sourceName = "DistanceToImagePlaneSD"
         }
     }
 ''')
@@ -486,19 +552,32 @@ class OVRTXRenderer(RendererBase):
 
     def _initialize_output(self):
         """Initialize the output of the renderer."""
-        self._data_types = ["rgba", "rgb", "depth"]
-
-        # Create output buffers on GPU
-        # RGBA buffer: (num_envs, height, width, 4) of uint8
-        self._output_data_buffers["rgba"] = wp.zeros(
-            (self._num_envs, self._height, self._width, 4), dtype=wp.uint8, device="cuda:0"
-        )
-        # Create RGB view that references the same underlying array as RGBA, but only first 3 channels
-        self._output_data_buffers["rgb"] = self._output_data_buffers["rgba"][:, :, :, :3]
-        # Depth buffer: (num_envs, height, width, 1) of float32
-        self._output_data_buffers["depth"] = wp.zeros(
-            (self._num_envs, self._height, self._width, 1), dtype=wp.float32, device="cuda:0"
-        )
+        # Create output buffers based on requested data types
+        
+        # RGBA/RGB buffers (shared)
+        if any(dt in ["rgba", "rgb"] for dt in self._data_types):
+            # RGBA buffer: (num_envs, height, width, 4) of uint8
+            self._output_data_buffers["rgba"] = wp.zeros(
+                (self._num_envs, self._height, self._width, 4), dtype=wp.uint8, device="cuda:0"
+            )
+            # Create RGB view that references the same underlying array as RGBA, but only first 3 channels
+            self._output_data_buffers["rgb"] = self._output_data_buffers["rgba"][:, :, :, :3]
+        
+        # Depth buffers (note: "depth" is an alias for "distance_to_image_plane")
+        if "depth" in self._data_types:
+            self._output_data_buffers["depth"] = wp.zeros(
+                (self._num_envs, self._height, self._width, 1), dtype=wp.float32, device="cuda:0"
+            )
+        
+        if "distance_to_image_plane" in self._data_types:
+            self._output_data_buffers["distance_to_image_plane"] = wp.zeros(
+                (self._num_envs, self._height, self._width, 1), dtype=wp.float32, device="cuda:0"
+            )
+        
+        if "distance_to_camera" in self._data_types:
+            self._output_data_buffers["distance_to_camera"] = wp.zeros(
+                (self._num_envs, self._height, self._width, 1), dtype=wp.float32, device="cuda:0"
+            )
 
 ###    def _setup_scene(self, as_root_layer: bool = True):
 ###        """Set up the USD scene with cameras and render products.
@@ -730,13 +809,39 @@ class OVRTXRenderer(RendererBase):
                                     # Save individual image
                                     self._save_image_to_disk(self._output_data_buffers["rgba"][env_idx], env_idx)
                         
-                        # Extract depth if available and configured
-                        # TODO: Add depth RenderVar to the RenderProduct USD definition
-                        # if self._cfg.output_annotators and "depth" in self._cfg.output_annotators:
-                        #     if "distance_to_camera" in frame.render_vars:
-                        #         with frame.render_vars["distance_to_camera"].map(device="cuda") as mapping:
-                        #             depth_data = wp.from_dlpack(mapping.tensor)
-                        #             # Extract tiles for depth as well
+                        # Extract depth if available
+                        if "depth" in frame.render_vars:
+                            with frame.render_vars["depth"].map(device="cuda") as mapping:
+                                tiled_depth_data = wp.from_dlpack(mapping.tensor)
+                                print(f"[DEBUG] Tiled depth data shape: {tiled_depth_data.shape}, dtype: {tiled_depth_data.dtype}")
+                                
+                                # Extract individual tiles for each environment
+                                for env_idx in range(self._num_envs):
+                                    # Calculate tile position in grid
+                                    tile_x = env_idx % self._num_tiles_per_side
+                                    tile_y = env_idx // self._num_tiles_per_side
+                                    
+                                    # Extract depth tile using the depth-specific kernel
+                                    # Populate all requested depth-related buffers (they all use the same source data)
+                                    for depth_type in ["depth", "distance_to_image_plane", "distance_to_camera"]:
+                                        if depth_type in self._output_data_buffers:
+                                            wp.launch(
+                                                kernel=_extract_depth_tile_from_tiled_buffer_kernel,
+                                                dim=(self._height, self._width),
+                                                inputs=[
+                                                    tiled_depth_data,
+                                                    self._output_data_buffers[depth_type][env_idx],
+                                                    tile_x,
+                                                    tile_y,
+                                                    self._width,
+                                                    self._height,
+                                                ],
+                                                device="cuda:0",
+                                            )
+                                    
+                                    if env_idx == 0 and self._frame_counter <= 5:
+                                        print(f"[OVRTX] Extracted depth tile for env {env_idx}")
+
         
             except Exception as e:
                 print(f"Warning: OVRTX rendering failed: {e}")

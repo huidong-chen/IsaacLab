@@ -28,8 +28,12 @@ class RendererBase(ABC):
 
         # TODO: share the same renderer for different cameras/rendering jobs.
 
-    def initialize(self):
-        """Initialize the renderer."""
+    def initialize(self, **kwargs):
+        """Initialize the renderer.
+        
+        Args:
+            **kwargs: Additional keyword arguments specific to the renderer implementation.
+        """
         # Step 1: Initialize the corresponding output data type
         # Step 2: initialize output buffers
         raise NotImplementedError("initialize() is not implemented.")

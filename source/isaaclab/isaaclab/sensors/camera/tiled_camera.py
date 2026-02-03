@@ -156,7 +156,8 @@ class TiledCamera(Camera):
 
         if self.cfg.renderer_type == "newton_warp":
             renderer_cfg = NewtonWarpRendererCfg(
-                width=self.cfg.width, height=self.cfg.height, num_cameras=self._view.count, num_envs=self._num_envs
+                width=self.cfg.width, height=self.cfg.height, num_cameras=self._view.count, num_envs=self._num_envs,
+                data_types=self.cfg.data_types
             )
             # Lazy-load the renderer class
             renderer_cls = get_renderer_class("newton_warp")
@@ -173,7 +174,8 @@ class TiledCamera(Camera):
             self._renderer.initialize()
         elif self.cfg.renderer_type == "ov_rtx":
             renderer_cfg = OVRTXRendererCfg(
-                width=self.cfg.width, height=self.cfg.height, num_cameras=self._view.count, num_envs=self._num_envs
+                width=self.cfg.width, height=self.cfg.height, num_cameras=self._view.count, num_envs=self._num_envs,
+                data_types=self.cfg.data_types
             )
             # Lazy-load the renderer class
             renderer_cls = get_renderer_class("ov_rtx")
