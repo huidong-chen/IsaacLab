@@ -211,6 +211,9 @@ class OVRTXRenderer(RendererBase):
             self._data_types = cfg.data_types
         else:
             self._data_types = ["rgb"]
+        
+        # Store simple shading mode configuration
+        self._simple_shading_mode = cfg.simple_shading_mode if hasattr(cfg, 'simple_shading_mode') else True
 
     def _deactivate_cloned_envs(self, stage) -> list:
         """Deactivate all cloned environments (env_1 onwards) to exclude from export.
@@ -303,13 +306,22 @@ class OVRTXRenderer(RendererBase):
         print(f"[OVRTX] USD Module: {Usd.__file__}")
         
         print("Creating OVRTX renderer...")
-        OVRTX_CONFIG = RendererConfig(
-            startup_options={
-                "crashreporter/dumpDir": "/tmp",
-                # WAR to avoid startup crash due to unsafe FoundationUtils getStringBuffer on log/file which ovrtx doesn't set
-                "log/file": "/tmp/ovrtx_renderer.log",
-            }
-        )
+        
+        # Build startup options based on simple shading mode
+        startup_options = {
+            "crashreporter/dumpDir": "/tmp",
+            # WAR to avoid startup crash due to unsafe FoundationUtils getStringBuffer on log/file which ovrtx doesn't set
+            "log/file": "/tmp/ovrtx_renderer.log",
+        }
+        
+        # Add simple shading mode configuration if enabled
+        if self._simple_shading_mode:
+            startup_options["rtx/sdg/force/disableColorRender"] = "true"
+            print(f"[OVRTX] Simple shading mode ENABLED")
+        else:
+            print(f"[OVRTX] Simple shading mode DISABLED (using full RTX path tracing)")
+        
+        OVRTX_CONFIG = RendererConfig(startup_options=startup_options)
         self._renderer = Renderer(OVRTX_CONFIG)
         assert self._renderer, "Renderer should be valid after creation"
         print("OVRTX renderer created successfully!")
@@ -413,16 +425,22 @@ class OVRTXRenderer(RendererBase):
         use_depth = any(dt in ["depth", "distance_to_image_plane", "distance_to_camera"] for dt in self._data_types)
         use_rgb = any(dt in ["rgb", "rgba"] for dt in self._data_types)
         
-        # If both are requested, we need both (for now, default to LdrColor)
+        # If both are requested, we need both (for now, default to LdrColor or SimpleShadingSD)
         # In the future, we could render both but that would require multiple RenderProducts or orderedVars
         if use_depth and not use_rgb:
             render_var_path = "/Render/Vars/depth"
             render_var_name = "depth"
             print(f"  Rendering mode: depth only")
         else:
-            render_var_path = "/Render/Vars/LdrColor"
-            render_var_name = "LdrColor"
-            print(f"  Rendering mode: RGB/RGBA")
+            # Use SimpleShadingSD in simple shading mode, LdrColor otherwise
+            if self._simple_shading_mode:
+                render_var_path = "/Render/Vars/SimpleShading"
+                render_var_name = "SimpleShading"
+                print(f"  Rendering mode: RGB/RGBA (simple shading)")
+            else:
+                render_var_path = "/Render/Vars/LdrColor"
+                render_var_name = "LdrColor"
+                print(f"  Rendering mode: RGB/RGBA (full RTX)")
         
         camera_parts.append(f'''
     def RenderProduct "{render_product_name}" (
@@ -437,13 +455,18 @@ class OVRTXRenderer(RendererBase):
     }}
 ''')
         
-        # Add RenderVars (create both, but only one will be used based on orderedVars)
+        # Add RenderVars (create all types, but only one will be used based on orderedVars)
         camera_parts.append('''
     def "Vars"
     {
         def RenderVar "LdrColor"
         {
             uniform string sourceName = "LdrColor"
+        }
+        
+        def RenderVar "SimpleShading"
+        {
+            uniform string sourceName = "SimpleShadingSD"
         }
         
         def RenderVar "depth"
@@ -776,11 +799,17 @@ class OVRTXRenderer(RendererBase):
                         frame = product.frames[0]
                         print(f"[DEBUG] Frame has {len(product.frames)} frame(s) render_vars: {frame.render_vars}")
                         
-                        # Extract LdrColor (RGBA) if available - this is the tiled image
-                        if "LdrColor" in frame.render_vars and "rgba" in self._output_data_buffers:
-                            with frame.render_vars["LdrColor"].map(device="cuda") as mapping:
+                        # Extract RGB/RGBA data from either LdrColor or SimpleShadingSD (depending on mode)
+                        rgb_render_var = None
+                        if "SimpleShadingSD" in frame.render_vars:
+                            rgb_render_var = "SimpleShadingSD"
+                        elif "LdrColor" in frame.render_vars:
+                            rgb_render_var = "LdrColor"
+                        
+                        if rgb_render_var and "rgba" in self._output_data_buffers:
+                            with frame.render_vars[rgb_render_var].map(device="cuda") as mapping:
                                 tiled_data = wp.from_dlpack(mapping.tensor)
-                                print(f"[DEBUG] Tiled data shape: {tiled_data.shape}")
+                                print(f"[DEBUG] Tiled data shape: {tiled_data.shape} (from {rgb_render_var})")
                                 
                                 # Save the full tiled image
                                 self._save_tiled_image_to_disk(tiled_data)

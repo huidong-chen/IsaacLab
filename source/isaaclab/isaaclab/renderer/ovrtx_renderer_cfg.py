@@ -19,3 +19,14 @@ class OVRTXRendererCfg(RendererCfg):
 
     renderer_type: str = "ov_rtx"
     """Type identifier for OVRTX renderer."""
+    
+    simple_shading_mode: bool = True
+    """Whether to use simple shading mode (default: True).
+    
+    When enabled, this mode:
+    - Sets rtx/sdg/force/disableColorRender to true in RenderConfig
+    - Uses SimpleShadingSD RenderVar instead of LdrColor for RGB rendering
+    
+    This provides faster, simpler rendering suitable for many vision-based tasks.
+    Set to False to use full RTX path-traced rendering with LdrColor.
+    """
