@@ -421,16 +421,26 @@ class OVRTXRenderer(RendererBase):
         print(f"  Total tiled resolution: {self._tiled_width} x {self._tiled_height}")
         
         # Determine which RenderVar to use based on requested data types
-        # Priority: depth types > rgb types (to save rendering time when only depth is needed)
+        # Priority: depth > albedo/semantic > rgb (to optimize rendering performance)
         use_depth = any(dt in ["depth", "distance_to_image_plane", "distance_to_camera"] for dt in self._data_types)
+        use_albedo = "albedo" in self._data_types
+        use_semantic = "semantic_segmentation" in self._data_types
         use_rgb = any(dt in ["rgb", "rgba"] for dt in self._data_types)
         
-        # If both are requested, we need both (for now, default to LdrColor or SimpleShadingSD)
-        # In the future, we could render both but that would require multiple RenderProducts or orderedVars
-        if use_depth and not use_rgb:
+        # Determine the primary render mode based on requested data types
+        # Note: For now, we support single RenderVar. Multiple RenderVars would require orderedVars
+        if use_depth and not (use_rgb or use_albedo or use_semantic):
             render_var_path = "/Render/Vars/depth"
             render_var_name = "depth"
             print(f"  Rendering mode: depth only")
+        elif use_albedo and not (use_rgb or use_semantic):
+            render_var_path = "/Render/Vars/albedo"
+            render_var_name = "albedo"
+            print(f"  Rendering mode: albedo only")
+        elif use_semantic and not (use_rgb or use_albedo):
+            render_var_path = "/Render/Vars/semantic"
+            render_var_name = "semantic"
+            print(f"  Rendering mode: semantic segmentation only")
         else:
             # Use SimpleShadingSD in simple shading mode, LdrColor otherwise
             if self._simple_shading_mode:
@@ -457,12 +467,17 @@ class OVRTXRenderer(RendererBase):
         
         # Add only the RenderVar that's actually being used
         # Determine sourceName based on render_var_name
+        # These sourceNames correspond to the AOV (Arbitrary Output Variable) names in the renderer
         if render_var_name == "depth":
             source_name = "DistanceToImagePlaneSD"
         elif render_var_name == "SimpleShading":
             source_name = "SimpleShadingSD"
         elif render_var_name == "LdrColor":
             source_name = "LdrColor"
+        elif render_var_name == "albedo":
+            source_name = "DiffuseAlbedoSD"
+        elif render_var_name == "semantic":
+            source_name = "SemanticSegmentationSD"
         else:
             source_name = render_var_name  # Fallback
         
@@ -585,6 +600,18 @@ class OVRTXRenderer(RendererBase):
             )
             # Create RGB view that references the same underlying array as RGBA, but only first 3 channels
             self._output_data_buffers["rgb"] = self._output_data_buffers["rgba"][:, :, :, :3]
+        
+        # Albedo buffer (4-channel RGBA format, similar to rgb/rgba)
+        if "albedo" in self._data_types:
+            self._output_data_buffers["albedo"] = wp.zeros(
+                (self._num_envs, self._height, self._width, 4), dtype=wp.uint8, device="cuda:0"
+            )
+        
+        # Semantic segmentation buffer (4-channel RGBA format for colorized output)
+        if "semantic_segmentation" in self._data_types:
+            self._output_data_buffers["semantic_segmentation"] = wp.zeros(
+                (self._num_envs, self._height, self._width, 4), dtype=wp.uint8, device="cuda:0"
+            )
         
         # Depth buffers (note: "depth" is an alias for "distance_to_image_plane")
         if "depth" in self._data_types:
@@ -893,6 +920,76 @@ class OVRTXRenderer(RendererBase):
                                     
                                     if env_idx == 0 and self._frame_counter <= 5:
                                         print(f"[OVRTX] Extracted depth tile for env {env_idx}")
+                        
+                        # Extract albedo if available
+                        if "DiffuseAlbedoSD" in frame.render_vars and "albedo" in self._output_data_buffers:
+                            with frame.render_vars["DiffuseAlbedoSD"].map(device="cuda") as mapping:
+                                tiled_albedo_data = wp.from_dlpack(mapping.tensor)
+                                print(f"[DEBUG] Tiled albedo data shape: {tiled_albedo_data.shape}")
+                                
+                                # Save the full tiled albedo image
+                                self._save_tiled_image_to_disk(tiled_albedo_data, suffix="albedo")
+                                
+                                # Extract individual tiles for each environment
+                                for env_idx in range(self._num_envs):
+                                    # Calculate tile position in grid
+                                    tile_x = env_idx % self._num_tiles_per_side
+                                    tile_y = env_idx // self._num_tiles_per_side
+                                    
+                                    # Extract this tile using kernel
+                                    wp.launch(
+                                        kernel=_extract_tile_from_tiled_buffer_kernel,
+                                        dim=(self._height, self._width),
+                                        inputs=[
+                                            tiled_albedo_data,
+                                            self._output_data_buffers["albedo"][env_idx],
+                                            tile_x,
+                                            tile_y,
+                                            self._width,
+                                            self._height,
+                                        ],
+                                        device="cuda:0",
+                                    )
+                                    
+                                    # Save individual albedo image
+                                    if env_idx == 0 and self._frame_counter <= 5:
+                                        print(f"[OVRTX] Extracted albedo tile for env {env_idx}")
+                                    self._save_image_to_disk(self._output_data_buffers["albedo"][env_idx], env_idx, suffix="albedo")
+                        
+                        # Extract semantic segmentation if available
+                        if "SemanticSegmentationSD" in frame.render_vars and "semantic_segmentation" in self._output_data_buffers:
+                            with frame.render_vars["SemanticSegmentationSD"].map(device="cuda") as mapping:
+                                tiled_semantic_data = wp.from_dlpack(mapping.tensor)
+                                print(f"[DEBUG] Tiled semantic segmentation data shape: {tiled_semantic_data.shape}")
+                                
+                                # Save the full tiled semantic segmentation image
+                                self._save_tiled_image_to_disk(tiled_semantic_data, suffix="semantic")
+                                
+                                # Extract individual tiles for each environment
+                                for env_idx in range(self._num_envs):
+                                    # Calculate tile position in grid
+                                    tile_x = env_idx % self._num_tiles_per_side
+                                    tile_y = env_idx // self._num_tiles_per_side
+                                    
+                                    # Extract this tile using kernel
+                                    wp.launch(
+                                        kernel=_extract_tile_from_tiled_buffer_kernel,
+                                        dim=(self._height, self._width),
+                                        inputs=[
+                                            tiled_semantic_data,
+                                            self._output_data_buffers["semantic_segmentation"][env_idx],
+                                            tile_x,
+                                            tile_y,
+                                            self._width,
+                                            self._height,
+                                        ],
+                                        device="cuda:0",
+                                    )
+                                    
+                                    # Save individual semantic segmentation image
+                                    if env_idx == 0 and self._frame_counter <= 5:
+                                        print(f"[OVRTX] Extracted semantic segmentation tile for env {env_idx}")
+                                    self._save_image_to_disk(self._output_data_buffers["semantic_segmentation"][env_idx], env_idx, suffix="semantic")
 
         
             except Exception as e:
@@ -993,12 +1090,13 @@ class OVRTXRenderer(RendererBase):
             if self._frame_counter == 1:
                 print(f"[OVRTX] Warning: Failed to update object transforms: {e}")
 
-    def _save_image_to_disk(self, rendered_data_wp: wp.array, env_idx: int):
+    def _save_image_to_disk(self, rendered_data_wp: wp.array, env_idx: int, suffix: str = ""):
         """Save rendered image to disk.
         
         Args:
             rendered_data_wp: Warp array containing RGBA data, shape (height, width, 4)
             env_idx: Environment index for filename
+            suffix: Optional suffix to add to filename (e.g., "albedo", "semantic")
         """
         try:
             # Convert warp array to torch tensor, then to numpy
@@ -1010,7 +1108,10 @@ class OVRTXRenderer(RendererBase):
                 rendered_data_np = (rendered_data_np * 255).astype(np.uint8)
             
             # Create output directory if it doesn't exist
-            output_dir = Path("ovrtx_rendered_images")
+            if suffix:
+                output_dir = Path(f"ovrtx_rendered_images_{suffix}")
+            else:
+                output_dir = Path("ovrtx_rendered_images")
             output_dir.mkdir(exist_ok=True)
             
             # Save as PNG
@@ -1029,7 +1130,10 @@ class OVRTXRenderer(RendererBase):
                 return
             
             # Save with frame and environment index in filename
-            output_path = output_dir / f"frame_{self._frame_counter:06d}_env_{env_idx:04d}.png"
+            if suffix:
+                output_path = output_dir / f"{suffix}_frame_{self._frame_counter:06d}_env_{env_idx:04d}.png"
+            else:
+                output_path = output_dir / f"frame_{self._frame_counter:06d}_env_{env_idx:04d}.png"
             image.save(output_path)
             
             # Only print for first environment and first few frames to avoid spam
@@ -1094,11 +1198,12 @@ class OVRTXRenderer(RendererBase):
             import traceback
             traceback.print_exc()
     
-    def _save_tiled_image_to_disk(self, tiled_data_wp: wp.array):
+    def _save_tiled_image_to_disk(self, tiled_data_wp: wp.array, suffix: str = ""):
         """Save tiled image (all environments in a grid) to disk.
         
         Args:
             tiled_data_wp: Warp array containing tiled RGBA data, shape (tiled_height, tiled_width, 4)
+            suffix: Optional suffix to add to filename and directory (e.g., "albedo", "semantic")
         """
         try:
             # Convert warp array to torch tensor, then to numpy
@@ -1110,17 +1215,23 @@ class OVRTXRenderer(RendererBase):
                 tiled_data_np = (tiled_data_np * 255).astype(np.uint8)
             
             # Create output directory if it doesn't exist
-            output_dir = Path("ovrtx_rendered_images")
+            if suffix:
+                output_dir = Path(f"ovrtx_rendered_images_{suffix}")
+            else:
+                output_dir = Path("ovrtx_rendered_images")
             output_dir.mkdir(exist_ok=True)
             
             # Save as PNG
             image = Image.fromarray(tiled_data_np, mode='RGBA')
-            output_path = output_dir / f"frame_{self._frame_counter:06d}_tiled.png"
+            if suffix:
+                output_path = output_dir / f"{suffix}_frame_{self._frame_counter:06d}_tiled.png"
+            else:
+                output_path = output_dir / f"frame_{self._frame_counter:06d}_tiled.png"
             image.save(output_path)
             
             # Print only for first few frames
             if self._frame_counter <= 5:
-                print(f"[OVRTX] Saved tiled image ({self._num_envs} envs in {self._num_tiles_per_side}x{self._num_tiles_per_side} grid): {output_path}")
+                print(f"[OVRTX] Saved tiled {suffix + ' ' if suffix else ''}image ({self._num_envs} envs in {self._num_tiles_per_side}x{self._num_tiles_per_side} grid): {output_path}")
                 
         except Exception as e:
             print(f"Warning: Failed to save tiled image: {e}")
