@@ -925,7 +925,7 @@ class OVRTXRenderer(RendererBase):
                         if "DiffuseAlbedoSD" in frame.render_vars and "albedo" in self._output_data_buffers:
                             with frame.render_vars["DiffuseAlbedoSD"].map(device="cuda") as mapping:
                                 tiled_albedo_data = wp.from_dlpack(mapping.tensor)
-                                print(f"[DEBUG] Tiled albedo data shape: {tiled_albedo_data.shape}")
+                                print(f"[DEBUG] Tiled albedo data shape: {tiled_albedo_data.shape}, dtype: {tiled_albedo_data.dtype}")
                                 
                                 # Save the full tiled albedo image
                                 self._save_tiled_image_to_disk(tiled_albedo_data, suffix="albedo")
@@ -960,7 +960,31 @@ class OVRTXRenderer(RendererBase):
                         if "SemanticSegmentationSD" in frame.render_vars and "semantic_segmentation" in self._output_data_buffers:
                             with frame.render_vars["SemanticSegmentationSD"].map(device="cuda") as mapping:
                                 tiled_semantic_data = wp.from_dlpack(mapping.tensor)
-                                print(f"[DEBUG] Tiled semantic segmentation data shape: {tiled_semantic_data.shape}")
+                                print(f"[DEBUG] Tiled semantic segmentation data shape: {tiled_semantic_data.shape}, dtype: {tiled_semantic_data.dtype}")
+                                
+                                # Handle different data formats for semantic segmentation
+                                # OVRTX may return uint32 (packed RGBA) or uint8 (direct RGBA)
+                                if tiled_semantic_data.dtype == wp.uint32:
+                                    # Data is in uint32 format (packed RGBA), need to convert to uint8 RGBA
+                                    print(f"[DEBUG] Converting semantic segmentation from uint32 to uint8 RGBA")
+                                    
+                                    # Convert to torch, view as uint8, reshape to RGBA
+                                    semantic_torch = wp.to_torch(tiled_semantic_data)
+                                    # Each uint32 contains 4 bytes (RGBA), reinterpret as uint8
+                                    semantic_uint8_torch = semantic_torch.view(torch.uint8)
+                                    
+                                    # Reshape to (height, width, 4) for RGBA
+                                    if len(semantic_torch.shape) == 2:
+                                        # Shape is (H, W) in uint32, becomes (H, W*4) in uint8
+                                        h, w = semantic_torch.shape
+                                        semantic_uint8_torch = semantic_uint8_torch.reshape(h, w, 4)
+                                    
+                                    # Convert back to warp array
+                                    tiled_semantic_data = wp.from_torch(semantic_uint8_torch, dtype=wp.uint8)
+                                    print(f"[DEBUG] Converted semantic segmentation shape: {tiled_semantic_data.shape}")
+                                elif len(tiled_semantic_data.shape) == 2:
+                                    # Data is 2D but uint8, need to expand to RGBA
+                                    print(f"[DEBUG] WARNING: Semantic segmentation is 2D uint8, may need special handling")
                                 
                                 # Save the full tiled semantic segmentation image
                                 self._save_tiled_image_to_disk(tiled_semantic_data, suffix="semantic")
