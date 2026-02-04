@@ -455,25 +455,25 @@ class OVRTXRenderer(RendererBase):
     }}
 ''')
         
-        # Add RenderVars (create all types, but only one will be used based on orderedVars)
-        camera_parts.append('''
+        # Add only the RenderVar that's actually being used
+        # Determine sourceName based on render_var_name
+        if render_var_name == "depth":
+            source_name = "DistanceToImagePlaneSD"
+        elif render_var_name == "SimpleShading":
+            source_name = "SimpleShadingSD"
+        elif render_var_name == "LdrColor":
+            source_name = "LdrColor"
+        else:
+            source_name = render_var_name  # Fallback
+        
+        camera_parts.append(f'''
     def "Vars"
-    {
-        def RenderVar "LdrColor"
-        {
-            uniform string sourceName = "LdrColor"
-        }
-        
-        def RenderVar "SimpleShading"
-        {
-            uniform string sourceName = "SimpleShadingSD"
-        }
-        
-        def RenderVar "depth"
-        {
-            uniform string sourceName = "DistanceToImagePlaneSD"
-        }
-    }
+    {{
+        def RenderVar "{render_var_name}"
+        {{
+            uniform string sourceName = "{source_name}"
+        }}
+    }}
 ''')
         
         camera_parts.append('}\n')
