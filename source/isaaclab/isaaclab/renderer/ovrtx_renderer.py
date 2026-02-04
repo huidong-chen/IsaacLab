@@ -839,7 +839,7 @@ class OVRTXRenderer(RendererBase):
                                 print(f"[DEBUG] Tiled data shape: {tiled_data.shape} (from {rgb_render_var})")
                                 
                                 # Save the full tiled image
-                                self._save_tiled_image_to_disk(tiled_data)
+                                self._save_tiled_image_to_disk(tiled_data, suffix="rgb")
                                 
                                 # Extract individual tiles for each environment
                                 for env_idx in range(self._num_envs):
@@ -863,7 +863,7 @@ class OVRTXRenderer(RendererBase):
                                     )
                                     
                                     # Save individual image
-                                    self._save_image_to_disk(self._output_data_buffers["rgba"][env_idx], env_idx)
+                                    self._save_image_to_disk(self._output_data_buffers["rgba"][env_idx], env_idx, suffix="rgb")
                         
                         # Extract depth if available
                         # Check for depth render vars by their sourceName (DistanceToImagePlaneSD or DepthSD)
