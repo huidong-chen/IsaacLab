@@ -774,10 +774,10 @@ class OVRTXRenderer(RendererBase):
                     
                     if len(product.frames) > 0:
                         frame = product.frames[0]
-                        print(f"[DEBUG] Frame has {len(product.frames)} frame(s)")
+                        print(f"[DEBUG] Frame has {len(product.frames)} frame(s) render_vars: {frame.render_vars}")
                         
                         # Extract LdrColor (RGBA) if available - this is the tiled image
-                        if "LdrColor" in frame.render_vars:
+                        if "LdrColor" in frame.render_vars and "rgba" in self._output_data_buffers:
                             with frame.render_vars["LdrColor"].map(device="cuda") as mapping:
                                 tiled_data = wp.from_dlpack(mapping.tensor)
                                 print(f"[DEBUG] Tiled data shape: {tiled_data.shape}")
@@ -810,10 +810,29 @@ class OVRTXRenderer(RendererBase):
                                     self._save_image_to_disk(self._output_data_buffers["rgba"][env_idx], env_idx)
                         
                         # Extract depth if available
-                        if "depth" in frame.render_vars:
-                            with frame.render_vars["depth"].map(device="cuda") as mapping:
+                        # Check for depth render vars by their sourceName (DistanceToImagePlaneSD or DepthSD)
+                        depth_source_names = ["DistanceToImagePlaneSD", "DepthSD"]
+                        depth_var_found = None
+                        for source_name in depth_source_names:
+                            if source_name in frame.render_vars:
+                                depth_var_found = source_name
+                                break
+                        
+                        if depth_var_found:
+                            with frame.render_vars[depth_var_found].map(device="cuda") as mapping:
                                 tiled_depth_data = wp.from_dlpack(mapping.tensor)
-                                print(f"[DEBUG] Tiled depth data shape: {tiled_depth_data.shape}, dtype: {tiled_depth_data.dtype}")
+                                print(f"[DEBUG] Tiled depth data ({depth_var_found}) shape: {tiled_depth_data.shape}, dtype: {tiled_depth_data.dtype}")
+                                
+                                # OVRTX returns depth as uint32, need to reinterpret as float32
+                                if tiled_depth_data.dtype == wp.uint32:
+                                    # Reinterpret uint32 bits as float32 via torch
+                                    depth_torch = wp.to_torch(tiled_depth_data)
+                                    depth_float_torch = depth_torch.view(torch.float32)
+                                    tiled_depth_data = wp.from_torch(depth_float_torch, dtype=wp.float32)
+                                    print(f"[DEBUG] Converted depth data from uint32 to float32 (reinterpreted bits)")
+                                
+                                # Save the full tiled depth image
+                                self._save_tiled_depth_image_to_disk(tiled_depth_data)
                                 
                                 # Extract individual tiles for each environment
                                 for env_idx in range(self._num_envs):
@@ -838,6 +857,10 @@ class OVRTXRenderer(RendererBase):
                                                 ],
                                                 device="cuda:0",
                                             )
+                                    
+                                    # Save depth image to disk for the first depth type available
+                                    if "depth" in self._output_data_buffers:
+                                        self._save_depth_image_to_disk(self._output_data_buffers["depth"][env_idx], env_idx)
                                     
                                     if env_idx == 0 and self._frame_counter <= 5:
                                         print(f"[OVRTX] Extracted depth tile for env {env_idx}")
@@ -987,6 +1010,61 @@ class OVRTXRenderer(RendererBase):
         except Exception as e:
             print(f"Warning: Failed to save image for env {env_idx}: {e}")
     
+    def _save_depth_image_to_disk(self, depth_data_wp: wp.array, env_idx: int):
+        """Save depth image to disk as grayscale PNG (normalized).
+        
+        Args:
+            depth_data_wp: Warp array containing depth data, shape (height, width, 1)
+            env_idx: Environment index for filename
+        """
+        try:
+            # Convert warp array to torch tensor, then to numpy
+            depth_data_torch = wp.to_torch(depth_data_wp)
+            depth_data_np = depth_data_torch.cpu().numpy()
+            
+            # Remove channel dimension if present (H, W, 1) -> (H, W)
+            if len(depth_data_np.shape) == 3 and depth_data_np.shape[2] == 1:
+                depth_data_np = depth_data_np[:, :, 0]
+            
+            # Normalize depth to [0, 255] for visualization
+            # Handle inf/nan values
+            depth_valid = np.isfinite(depth_data_np)
+            if np.any(depth_valid):
+                depth_min = depth_data_np[depth_valid].min()
+                depth_max = depth_data_np[depth_valid].max()
+                
+                if depth_max > depth_min:
+                    # Normalize to 0-255
+                    depth_normalized = np.zeros_like(depth_data_np, dtype=np.uint8)
+                    depth_normalized[depth_valid] = ((depth_data_np[depth_valid] - depth_min) / (depth_max - depth_min) * 255).astype(np.uint8)
+                else:
+                    depth_normalized = np.zeros_like(depth_data_np, dtype=np.uint8)
+                
+                # Set invalid values to 0 (black)
+                depth_normalized[~depth_valid] = 0
+            else:
+                depth_normalized = np.zeros_like(depth_data_np, dtype=np.uint8)
+            
+            # Create output directory if it doesn't exist
+            output_dir = Path("ovrtx_rendered_images_depth")
+            output_dir.mkdir(exist_ok=True)
+            
+            # Save as grayscale PNG
+            image = Image.fromarray(depth_normalized, mode='L')
+            
+            # Save with frame and environment index in filename
+            output_path = output_dir / f"depth_frame_{self._frame_counter:06d}_env_{env_idx:04d}.png"
+            image.save(output_path)
+            
+            # Only print for first environment and first few frames to avoid spam
+            if env_idx == 0 and self._frame_counter <= 5:
+                print(f"[OVRTX] Saved depth image: {output_path} (range: {depth_min:.3f} to {depth_max:.3f})")
+                
+        except Exception as e:
+            print(f"Warning: Failed to save depth image for env {env_idx}: {e}")
+            import traceback
+            traceback.print_exc()
+    
     def _save_tiled_image_to_disk(self, tiled_data_wp: wp.array):
         """Save tiled image (all environments in a grid) to disk.
         
@@ -1017,6 +1095,54 @@ class OVRTXRenderer(RendererBase):
                 
         except Exception as e:
             print(f"Warning: Failed to save tiled image: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _save_tiled_depth_image_to_disk(self, tiled_depth_data_wp: wp.array):
+        """Save tiled depth image (all environments in a grid) to disk.
+        
+        Args:
+            tiled_depth_data_wp: Warp array containing tiled depth data, shape (tiled_height, tiled_width)
+        """
+        try:
+            # Convert warp array to torch tensor, then to numpy
+            tiled_depth_torch = wp.to_torch(tiled_depth_data_wp)
+            tiled_depth_np = tiled_depth_torch.cpu().numpy()
+            
+            # Normalize depth to [0, 255] for visualization
+            # Handle inf/nan values
+            depth_valid = np.isfinite(tiled_depth_np)
+            if np.any(depth_valid):
+                depth_min = tiled_depth_np[depth_valid].min()
+                depth_max = tiled_depth_np[depth_valid].max()
+                
+                if depth_max > depth_min:
+                    # Normalize to 0-255
+                    depth_normalized = np.zeros_like(tiled_depth_np, dtype=np.uint8)
+                    depth_normalized[depth_valid] = ((tiled_depth_np[depth_valid] - depth_min) / (depth_max - depth_min) * 255).astype(np.uint8)
+                else:
+                    depth_normalized = np.zeros_like(tiled_depth_np, dtype=np.uint8)
+                
+                # Set invalid values to 0 (black)
+                depth_normalized[~depth_valid] = 0
+            else:
+                depth_normalized = np.zeros_like(tiled_depth_np, dtype=np.uint8)
+            
+            # Create output directory if it doesn't exist
+            output_dir = Path("ovrtx_rendered_images_depth")
+            output_dir.mkdir(exist_ok=True)
+            
+            # Save as grayscale PNG
+            image = Image.fromarray(depth_normalized, mode='L')
+            output_path = output_dir / f"depth_frame_{self._frame_counter:06d}_tiled.png"
+            image.save(output_path)
+            
+            # Print only for first few frames
+            if self._frame_counter <= 5:
+                print(f"[OVRTX] Saved tiled depth image ({self._num_envs} envs in {self._num_tiles_per_side}x{self._num_tiles_per_side} grid): {output_path} (range: {depth_min:.3f} to {depth_max:.3f})")
+                
+        except Exception as e:
+            print(f"Warning: Failed to save tiled depth image: {e}")
             import traceback
             traceback.print_exc()
 
