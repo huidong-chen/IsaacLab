@@ -214,6 +214,13 @@ class OVRTXRenderer(RendererBase):
         
         # Store simple shading mode configuration
         self._simple_shading_mode = cfg.simple_shading_mode if hasattr(cfg, 'simple_shading_mode') else True
+        
+        # Store image folder configuration
+        self._image_folder = cfg.image_folder if hasattr(cfg, 'image_folder') else None
+        if self._image_folder:
+            # Create the output directory if it doesn't exist
+            Path(self._image_folder).mkdir(parents=True, exist_ok=True)
+            print(f"[OVRTX] Images will be saved to: {self._image_folder}")
 
     def _deactivate_cloned_envs(self, stage) -> list:
         """Deactivate all cloned environments (env_1 onwards) to exclude from export.
@@ -1120,8 +1127,12 @@ class OVRTXRenderer(RendererBase):
         Args:
             rendered_data_wp: Warp array containing RGBA data, shape (height, width, 4)
             env_idx: Environment index for filename
-            suffix: Optional suffix to add to filename (e.g., "albedo", "semantic")
+            suffix: Optional suffix to add to filename (e.g., "albedo", "semantic", "rgb")
         """
+        # Only save if image_folder is configured
+        if not self._image_folder:
+            return
+            
         try:
             # Convert warp array to torch tensor, then to numpy
             rendered_data_torch = wp.to_torch(rendered_data_wp)
@@ -1131,12 +1142,8 @@ class OVRTXRenderer(RendererBase):
             if rendered_data_np.dtype in [np.float32, np.float64]:
                 rendered_data_np = (rendered_data_np * 255).astype(np.uint8)
             
-            # Create output directory if it doesn't exist
-            if suffix:
-                output_dir = Path(f"ovrtx_rendered_images_{suffix}")
-            else:
-                output_dir = Path("ovrtx_rendered_images")
-            output_dir.mkdir(exist_ok=True)
+            # Use the configured image folder
+            output_dir = Path(self._image_folder)
             
             # Save as PNG
             # rendered_data_np is shape (height, width, 4) for RGBA
@@ -1153,7 +1160,7 @@ class OVRTXRenderer(RendererBase):
                 print(f"Warning: Unexpected image shape {rendered_data_np.shape}, cannot save")
                 return
             
-            # Save with frame and environment index in filename
+            # Save with frame, environment index, and suffix in filename
             if suffix:
                 output_path = output_dir / f"{suffix}_frame_{self._frame_counter:06d}_env_{env_idx:04d}.png"
             else:
@@ -1174,6 +1181,10 @@ class OVRTXRenderer(RendererBase):
             depth_data_wp: Warp array containing depth data, shape (height, width, 1)
             env_idx: Environment index for filename
         """
+        # Only save if image_folder is configured
+        if not self._image_folder:
+            return
+            
         try:
             # Convert warp array to torch tensor, then to numpy
             depth_data_torch = wp.to_torch(depth_data_wp)
@@ -1202,9 +1213,8 @@ class OVRTXRenderer(RendererBase):
             else:
                 depth_normalized = np.zeros_like(depth_data_np, dtype=np.uint8)
             
-            # Create output directory if it doesn't exist
-            output_dir = Path("ovrtx_rendered_images_depth")
-            output_dir.mkdir(exist_ok=True)
+            # Use the configured image folder
+            output_dir = Path(self._image_folder)
             
             # Save as grayscale PNG
             image = Image.fromarray(depth_normalized, mode='L')
@@ -1227,8 +1237,12 @@ class OVRTXRenderer(RendererBase):
         
         Args:
             tiled_data_wp: Warp array containing tiled RGBA data, shape (tiled_height, tiled_width, 4)
-            suffix: Optional suffix to add to filename and directory (e.g., "albedo", "semantic")
+            suffix: Optional suffix to add to filename (e.g., "albedo", "semantic", "rgb")
         """
+        # Only save if image_folder is configured
+        if not self._image_folder:
+            return
+            
         try:
             # Convert warp array to torch tensor, then to numpy
             tiled_data_torch = wp.to_torch(tiled_data_wp)
@@ -1238,12 +1252,8 @@ class OVRTXRenderer(RendererBase):
             if tiled_data_np.dtype in [np.float32, np.float64]:
                 tiled_data_np = (tiled_data_np * 255).astype(np.uint8)
             
-            # Create output directory if it doesn't exist
-            if suffix:
-                output_dir = Path(f"ovrtx_rendered_images_{suffix}")
-            else:
-                output_dir = Path("ovrtx_rendered_images")
-            output_dir.mkdir(exist_ok=True)
+            # Use the configured image folder
+            output_dir = Path(self._image_folder)
             
             # Save as PNG
             image = Image.fromarray(tiled_data_np, mode='RGBA')
@@ -1268,6 +1278,10 @@ class OVRTXRenderer(RendererBase):
         Args:
             tiled_depth_data_wp: Warp array containing tiled depth data, shape (tiled_height, tiled_width)
         """
+        # Only save if image_folder is configured
+        if not self._image_folder:
+            return
+            
         try:
             # Convert warp array to torch tensor, then to numpy
             tiled_depth_torch = wp.to_torch(tiled_depth_data_wp)
@@ -1292,9 +1306,8 @@ class OVRTXRenderer(RendererBase):
             else:
                 depth_normalized = np.zeros_like(tiled_depth_np, dtype=np.uint8)
             
-            # Create output directory if it doesn't exist
-            output_dir = Path("ovrtx_rendered_images_depth")
-            output_dir.mkdir(exist_ok=True)
+            # Use the configured image folder
+            output_dir = Path(self._image_folder)
             
             # Save as grayscale PNG
             image = Image.fromarray(depth_normalized, mode='L')
