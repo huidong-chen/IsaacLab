@@ -366,10 +366,10 @@ class OVRTXRenderer(RendererBase):
             # Create binding for camera transforms (all environments now exist in OvRTX)
             camera_paths = [f"/World/envs/env_{i}/Camera" for i in range(self._num_envs)]
             
-            print(f"\n[DEBUG] OVRTX Camera Binding Setup:")
-            print(f"  Total cameras: {self._num_envs}")
-            print(f"  Camera paths: {camera_paths}")
-            print(f"  Binding to attribute: omni:fabric:worldMatrix")
+            # print(f"\n[DEBUG] OVRTX Camera Binding Setup:")
+            # print(f"  Total cameras: {self._num_envs}")
+            # print(f"  Camera paths: {camera_paths}")
+            # print(f"  Binding to attribute: omni:fabric:worldMatrix")
             
             self._camera_binding = self._renderer.bind_attribute(
                 prim_paths=camera_paths,
@@ -421,11 +421,11 @@ class OVRTXRenderer(RendererBase):
         camera_rel_list = ", ".join([f"<{path}>" for path in camera_paths])
         
         # Calculate tiled resolution: each tile is width x height, arranged in a grid
-        print(f"\n[DEBUG] OvRTX Tiled Resolution:")
-        print(f"  Individual camera resolution: {self._width} x {self._height}")
-        print(f"  Number of environments: {self._num_envs}")
-        print(f"  Tiles per side: {self._num_tiles_per_side}")
-        print(f"  Total tiled resolution: {self._tiled_width} x {self._tiled_height}")
+        # print(f"\n[DEBUG] OvRTX Tiled Resolution:")
+        # print(f"  Individual camera resolution: {self._width} x {self._height}")
+        # print(f"  Number of environments: {self._num_envs}")
+        # print(f"  Tiles per side: {self._num_tiles_per_side}")
+        # print(f"  Total tiled resolution: {self._tiled_width} x {self._tiled_height}")
         
         # Determine which RenderVar to use based on requested data types
         # Priority: depth > albedo/semantic > rgb (to optimize rendering performance)
@@ -547,9 +547,9 @@ class OVRTXRenderer(RendererBase):
                 print("[OVRTX] No dynamic objects found for binding")
                 return
             
-            print(f"\n[DEBUG] OVRTX Object Binding Setup:")
-            print(f"  Total dynamic objects: {len(object_paths)}")
-            print(f"  Example paths: {object_paths[:5]}")
+            # print(f"\n[DEBUG] OVRTX Object Binding Setup:")
+            # print(f"  Total dynamic objects: {len(object_paths)}")
+            # print(f"  Example paths: {object_paths[:5]}")
             
             # Create OVRTX binding for all objects at once
             self._object_binding = self._renderer.bind_attribute(
@@ -794,13 +794,13 @@ class OVRTXRenderer(RendererBase):
                 wp_transforms_view = wp.from_dlpack(attr_mapping.tensor, dtype=wp.mat44d)
                 
                 # Debug: Print transforms before and after update (first frame only)
-                if self._frame_counter == 1:
-                    self._print_camera_transforms_debug(
-                        wp_transforms_view, 
-                        camera_transforms, 
-                        camera_positions, 
-                        camera_orientations
-                    )
+                # if self._frame_counter == 1:
+                #     self._print_camera_transforms_debug(
+                #         wp_transforms_view, 
+                #         camera_transforms, 
+                #         camera_positions, 
+                #         camera_orientations
+                #     )
                 
                 # Copy our computed transforms to the mapped buffer
                 wp.copy(wp_transforms_view, camera_transforms)
@@ -811,7 +811,7 @@ class OVRTXRenderer(RendererBase):
         
         # Step the renderer to produce frames
         # We now have a single RenderProduct that references all cameras and outputs a tiled image
-        print(f"[DEBUG] render_product_paths: {self._render_product_paths}")
+        # print(f"[DEBUG] render_product_paths: {self._render_product_paths}")
         if self._renderer is not None and len(self._render_product_paths) > 0:
             try:
                 # Render using the single render product
@@ -821,7 +821,7 @@ class OVRTXRenderer(RendererBase):
                     render_products=render_product_set, 
                     delta_time=1.0/60.0
                 )
-                print(f"[DEBUG] Products: {products}")
+                # print(f"[DEBUG] Products: {products}")
                 
                 # Extract rendered images from the single render product
                 # The product should contain a single tiled frame
@@ -831,7 +831,7 @@ class OVRTXRenderer(RendererBase):
                     
                     if len(product.frames) > 0:
                         frame = product.frames[0]
-                        print(f"[DEBUG] Frame has {len(product.frames)} frame(s) render_vars: {frame.render_vars}")
+                        # print(f"[DEBUG] Frame has {len(product.frames)} frame(s) render_vars: {frame.render_vars}")
                         
                         # Extract RGB/RGBA data from either LdrColor or SimpleShadingSD (depending on mode)
                         rgb_render_var = None
@@ -843,7 +843,7 @@ class OVRTXRenderer(RendererBase):
                         if rgb_render_var and "rgba" in self._output_data_buffers:
                             with frame.render_vars[rgb_render_var].map(device="cuda") as mapping:
                                 tiled_data = wp.from_dlpack(mapping.tensor)
-                                print(f"[DEBUG] Tiled data shape: {tiled_data.shape} (from {rgb_render_var})")
+                                # print(f"[DEBUG] Tiled data shape: {tiled_data.shape} (from {rgb_render_var})")
                                 
                                 # Save the full tiled image
                                 self._save_tiled_image_to_disk(tiled_data, suffix="rgb")
@@ -884,7 +884,7 @@ class OVRTXRenderer(RendererBase):
                         if depth_var_found:
                             with frame.render_vars[depth_var_found].map(device="cuda") as mapping:
                                 tiled_depth_data = wp.from_dlpack(mapping.tensor)
-                                print(f"[DEBUG] Tiled depth data ({depth_var_found}) shape: {tiled_depth_data.shape}, dtype: {tiled_depth_data.dtype}")
+                                # print(f"[DEBUG] Tiled depth data ({depth_var_found}) shape: {tiled_depth_data.shape}, dtype: {tiled_depth_data.dtype}")
                                 
                                 # OVRTX returns depth as uint32, need to reinterpret as float32
                                 if tiled_depth_data.dtype == wp.uint32:
@@ -892,7 +892,7 @@ class OVRTXRenderer(RendererBase):
                                     depth_torch = wp.to_torch(tiled_depth_data)
                                     depth_float_torch = depth_torch.view(torch.float32)
                                     tiled_depth_data = wp.from_torch(depth_float_torch, dtype=wp.float32)
-                                    print(f"[DEBUG] Converted depth data from uint32 to float32 (reinterpreted bits)")
+                                    # print(f"[DEBUG] Converted depth data from uint32 to float32 (reinterpreted bits)")
                                 
                                 # Save the full tiled depth image
                                 self._save_tiled_depth_image_to_disk(tiled_depth_data)
@@ -932,7 +932,7 @@ class OVRTXRenderer(RendererBase):
                         if "DiffuseAlbedoSD" in frame.render_vars and "albedo" in self._output_data_buffers:
                             with frame.render_vars["DiffuseAlbedoSD"].map(device="cuda") as mapping:
                                 tiled_albedo_data = wp.from_dlpack(mapping.tensor)
-                                print(f"[DEBUG] Tiled albedo data shape: {tiled_albedo_data.shape}, dtype: {tiled_albedo_data.dtype}")
+                                # print(f"[DEBUG] Tiled albedo data shape: {tiled_albedo_data.shape}, dtype: {tiled_albedo_data.dtype}")
                                 
                                 # Save the full tiled albedo image
                                 self._save_tiled_image_to_disk(tiled_albedo_data, suffix="albedo")
@@ -967,13 +967,13 @@ class OVRTXRenderer(RendererBase):
                         if "SemanticSegmentationSD" in frame.render_vars and "semantic_segmentation" in self._output_data_buffers:
                             with frame.render_vars["SemanticSegmentationSD"].map(device="cuda") as mapping:
                                 tiled_semantic_data = wp.from_dlpack(mapping.tensor)
-                                print(f"[DEBUG] Tiled semantic segmentation data shape: {tiled_semantic_data.shape}, dtype: {tiled_semantic_data.dtype}")
+                                # print(f"[DEBUG] Tiled semantic segmentation data shape: {tiled_semantic_data.shape}, dtype: {tiled_semantic_data.dtype}")
                                 
                                 # Handle different data formats for semantic segmentation
                                 # OVRTX may return uint32 (packed RGBA) or uint8 (direct RGBA)
                                 if tiled_semantic_data.dtype == wp.uint32:
                                     # Data is in uint32 format (packed RGBA), need to convert to uint8 RGBA
-                                    print(f"[DEBUG] Converting semantic segmentation from uint32 to uint8 RGBA")
+                                    # print(f"[DEBUG] Converting semantic segmentation from uint32 to uint8 RGBA")
                                     
                                     # Convert to torch, view as uint8, reshape to RGBA
                                     semantic_torch = wp.to_torch(tiled_semantic_data)
@@ -988,10 +988,10 @@ class OVRTXRenderer(RendererBase):
                                     
                                     # Convert back to warp array
                                     tiled_semantic_data = wp.from_torch(semantic_uint8_torch, dtype=wp.uint8)
-                                    print(f"[DEBUG] Converted semantic segmentation shape: {tiled_semantic_data.shape}")
+                                    # print(f"[DEBUG] Converted semantic segmentation shape: {tiled_semantic_data.shape}")
                                 elif len(tiled_semantic_data.shape) == 2:
                                     # Data is 2D but uint8, need to expand to RGBA
-                                    print(f"[DEBUG] WARNING: Semantic segmentation is 2D uint8, may need special handling")
+                                    pass  # print(f"[DEBUG] WARNING: Semantic segmentation is 2D uint8, may need special handling")
                                 
                                 # Save the full tiled semantic segmentation image
                                 self._save_tiled_image_to_disk(tiled_semantic_data, suffix="semantic")
