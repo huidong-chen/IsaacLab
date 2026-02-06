@@ -197,10 +197,12 @@ class OVRTXRenderer(RendererBase):
         self._render_product_paths = []
         self._frame_counter = 0
         
-        # Calculate tiled dimensions (same as Newton renderer)
-        self._num_tiles_per_side = math.ceil(math.sqrt(self._num_envs))
-        self._tiled_width = self._num_tiles_per_side * self._width
-        self._tiled_height = self._num_tiles_per_side * self._height
+        # Calculate tiled dimensions properly (not a square grid)
+        # Use same logic as TiledCamera._tiling_grid_shape()
+        self._num_cols = math.ceil(math.sqrt(self._num_envs))
+        self._num_rows = math.ceil(self._num_envs / self._num_cols)
+        self._tiled_width = self._num_cols * self._width
+        self._tiled_height = self._num_rows * self._height
         
         # Store data types from config
         # Handle MISSING sentinel value from dataclasses
@@ -424,7 +426,7 @@ class OVRTXRenderer(RendererBase):
         # print(f"\n[DEBUG] OvRTX Tiled Resolution:")
         # print(f"  Individual camera resolution: {self._width} x {self._height}")
         # print(f"  Number of environments: {self._num_envs}")
-        # print(f"  Tiles per side: {self._num_tiles_per_side}")
+        # print(f"  Grid layout: {self._num_cols} cols x {self._num_rows} rows")
         # print(f"  Total tiled resolution: {self._tiled_width} x {self._tiled_height}")
         
         # Determine which RenderVar to use based on requested data types
@@ -854,8 +856,8 @@ class OVRTXRenderer(RendererBase):
                                 # Extract individual tiles for each environment
                                 for env_idx in range(self._num_envs):
                                     # Calculate tile position in grid
-                                    tile_x = env_idx % self._num_tiles_per_side
-                                    tile_y = env_idx // self._num_tiles_per_side
+                                    tile_x = env_idx % self._num_cols
+                                    tile_y = env_idx // self._num_cols
                                     
                                     # Extract this tile using kernel
                                     wp.launch(
@@ -903,8 +905,8 @@ class OVRTXRenderer(RendererBase):
                                 # Extract individual tiles for each environment
                                 for env_idx in range(self._num_envs):
                                     # Calculate tile position in grid
-                                    tile_x = env_idx % self._num_tiles_per_side
-                                    tile_y = env_idx // self._num_tiles_per_side
+                                    tile_x = env_idx % self._num_cols
+                                    tile_y = env_idx // self._num_cols
                                     
                                     # Extract depth tile using the depth-specific kernel
                                     # Populate all requested depth-related buffers (they all use the same source data)
@@ -943,8 +945,8 @@ class OVRTXRenderer(RendererBase):
                                 # Extract individual tiles for each environment
                                 for env_idx in range(self._num_envs):
                                     # Calculate tile position in grid
-                                    tile_x = env_idx % self._num_tiles_per_side
-                                    tile_y = env_idx // self._num_tiles_per_side
+                                    tile_x = env_idx % self._num_cols
+                                    tile_y = env_idx // self._num_cols
                                     
                                     # Extract this tile using kernel
                                     wp.launch(
@@ -1002,8 +1004,8 @@ class OVRTXRenderer(RendererBase):
                                 # Extract individual tiles for each environment
                                 for env_idx in range(self._num_envs):
                                     # Calculate tile position in grid
-                                    tile_x = env_idx % self._num_tiles_per_side
-                                    tile_y = env_idx // self._num_tiles_per_side
+                                    tile_x = env_idx % self._num_cols
+                                    tile_y = env_idx // self._num_cols
                                     
                                     # Extract this tile using kernel
                                     wp.launch(
@@ -1268,7 +1270,7 @@ class OVRTXRenderer(RendererBase):
             
             # Print only for first few frames
             if self._frame_counter <= 5:
-                print(f"[OVRTX] Saved tiled {suffix + ' ' if suffix else ''}image ({self._num_envs} envs in {self._num_tiles_per_side}x{self._num_tiles_per_side} grid): {output_path}")
+                print(f"[OVRTX] Saved tiled {suffix + ' ' if suffix else ''}image ({self._num_envs} envs in {self._num_cols}x{self._num_rows} grid): {output_path}")
                 
         except Exception as e:
             print(f"Warning: Failed to save tiled image: {e}")
@@ -1319,7 +1321,7 @@ class OVRTXRenderer(RendererBase):
             
             # Print only for first few frames
             if self._frame_counter <= 5:
-                print(f"[OVRTX] Saved tiled depth image ({self._num_envs} envs in {self._num_tiles_per_side}x{self._num_tiles_per_side} grid): {output_path} (range: {depth_min:.3f} to {depth_max:.3f})")
+                print(f"[OVRTX] Saved tiled depth image ({self._num_envs} envs in {self._num_cols}x{self._num_rows} grid): {output_path} (range: {depth_min:.3f} to {depth_max:.3f})")
                 
         except Exception as e:
             print(f"Warning: Failed to save tiled depth image: {e}")
