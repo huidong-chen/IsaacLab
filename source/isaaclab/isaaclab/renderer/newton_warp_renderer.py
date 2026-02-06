@@ -11,7 +11,7 @@ import torch
 from pathlib import Path
 
 import warp as wp
-from newton.sensors import TiledCameraSensor
+from newton.sensors import SensorTiledCamera
 from PIL import Image
 
 from isaaclab.sim._impl.newton_manager import NewtonManager
@@ -52,7 +52,7 @@ def _convert_raw_rgb_tiled(
     This kernel converts it to the tiled format (tiled_height, tiled_width, 4) of uint8.
 
     Args:
-        raw_buffer: Input raw buffer from TiledCameraSensor, shape (num_worlds, num_cameras, width * height) of uint32
+        raw_buffer: Input raw buffer from SensorTiledCamera, shape (num_worlds, num_cameras, width * height) of uint32
         output_buffer: Output buffer in tiled format (tiled_height, tiled_width, 4) of uint8
         image_width: Width of each camera image
         image_height: Height of each camera image
@@ -102,7 +102,7 @@ def _convert_raw_depth_tiled(
     This kernel converts it to the tiled format (tiled_height, tiled_width, 1) of float32.
 
     Args:
-        raw_buffer: Input raw buffer from TiledCameraSensor, shape (num_worlds, num_cameras, width * height) of float32
+        raw_buffer: Input raw buffer from SensorTiledCamera, shape (num_worlds, num_cameras, width * height) of float32
         output_buffer: Output buffer in tiled format (tiled_height, tiled_width, 1) of float32
         image_width: Width of each camera image
         image_height: Height of each camera image
@@ -155,12 +155,12 @@ class NewtonWarpRenderer(RendererBase):
         
         self._model = NewtonManager.get_model()
 
-        self._tiled_camera_sensor = TiledCameraSensor(
+        self._tiled_camera_sensor = SensorTiledCamera(
             model=self._model,
             num_cameras=1,  # TODO: currently only supports 1 camera per world
             width=self._width,
             height=self._height,
-            options=TiledCameraSensor.Options(colors_per_shape=True),
+            options=SensorTiledCamera.Options(colors_per_shape=True),
         )
 
         # Note: camera rays will be computed when we have access to TiledCamera
@@ -192,7 +192,7 @@ class NewtonWarpRenderer(RendererBase):
         fov_radians_wp = wp.from_torch(fov_radians_all, dtype=wp.float32)
 
         # Compute camera rays with per-camera FOVs (vectorized)
-        # TiledCameraSensor.compute_pinhole_camera_rays accepts array of FOVs
+        # SensorTiledCamera.compute_pinhole_camera_rays accepts array of FOVs
         self._camera_rays = self._tiled_camera_sensor.compute_pinhole_camera_rays(fov_radians_wp)
 
     def _initialize_output(self):
@@ -306,7 +306,7 @@ class NewtonWarpRenderer(RendererBase):
                 camera_orientations,
             )
 
-        # Render using TiledCameraSensor
+        # Render using SensorTiledCamera
         self._tiled_camera_sensor.render(
             state=NewtonManager.get_state_0(),  # Use current physics state
             camera_transforms=camera_transforms,

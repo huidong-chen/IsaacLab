@@ -23,8 +23,8 @@ class KukaAllegroSingleTiledCameraSceneCfg(kuka_allegro_dexsuite.KukaAllegroScen
     """Dexsuite scene for multi-objects Lifting/Reorientation"""
 
     camera_type: str = "rgb"
-    width: int = 256
-    height: int = 256
+    width: int = 64
+    height: int = 64
 
     base_camera = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Camera",
@@ -39,7 +39,7 @@ class KukaAllegroSingleTiledCameraSceneCfg(kuka_allegro_dexsuite.KukaAllegroScen
         height=MISSING,
         #renderer_type="newton_warp",
         renderer_type="ov_rtx", 
-        update_latest_camera_pose=True,
+        update_latest_camera_pose=False,
     )
 
     def __post_init__(self):
@@ -173,7 +173,7 @@ duo_camera_variants = {
 
 @configclass
 class KukaAllegroSingleCameraMixinCfg(kuka_allegro_dexsuite.KukaAllegroMixinCfg):
-    scene = KukaAllegroSingleTiledCameraSceneCfg(num_envs=4096, env_spacing=3, replicate_physics=True)
+    scene = KukaAllegroSingleTiledCameraSceneCfg(num_envs=4096, env_spacing=0.0, replicate_physics=True)
     observations: KukaAllegroSingleCameraObservationsCfg = KukaAllegroSingleCameraObservationsCfg()
 
     def __post_init__(self: kuka_allegro_dexsuite.DexsuiteKukaAllegroLiftEnvCfg):
@@ -183,7 +183,7 @@ class KukaAllegroSingleCameraMixinCfg(kuka_allegro_dexsuite.KukaAllegroMixinCfg)
 
 @configclass
 class KukaAllegroDuoCameraMixinCfg(kuka_allegro_dexsuite.KukaAllegroMixinCfg):
-    scene = KukaAllegroDuoTiledCameraSceneCfg(num_envs=4096, env_spacing=3, replicate_physics=True)
+    scene = KukaAllegroDuoTiledCameraSceneCfg(num_envs=4096, env_spacing=0.0, replicate_physics=True)
     observations: KukaAllegroDuoCameraObservationsCfg = KukaAllegroDuoCameraObservationsCfg()
 
     def __post_init__(self: kuka_allegro_dexsuite.DexsuiteKukaAllegroLiftEnvCfg):
