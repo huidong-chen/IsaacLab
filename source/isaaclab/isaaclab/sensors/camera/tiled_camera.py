@@ -184,6 +184,34 @@ class TiledCamera(Camera):
             if renderer_cls is None:
                 raise RuntimeError(f"Failed to load renderer class for type '{self.cfg.renderer_type}'.")
             self._renderer = renderer_cls(renderer_cfg)
+
+            # Add primvars:omni:scenePartition attribute to each environment prim
+            # and omni:scenePartitions relationship to each camera prim
+            print(f"[TILED_CAMERA] Setting up scene partitions for {self._num_envs} environments...")
+            from pxr import Sdf
+            for env_idx in range(self._num_envs):
+                env_path = f"/World/envs/env_{env_idx}"
+                env_prim = self.stage.GetPrimAtPath(env_path)
+                if env_prim.IsValid():
+                    # Create the primvar attribute on environment with the correct type (token)
+                    partition_name = f"env_{env_idx}"
+                    attr = env_prim.CreateAttribute("primvars:omni:scenePartition", Sdf.ValueTypeNames.Token)
+                    attr.Set(partition_name)
+                    print(f"   ✓ Set primvars:omni:scenePartition = '{partition_name}' on {env_path}")
+                    
+                    # Find camera prim for this environment and add omni:scenePartitions relationship
+                    # Camera paths follow pattern like /World/envs/env_0/Camera (or similar based on cfg.prim_path)
+                    camera_path = f"{env_path}/{self.cfg.prim_path.split('/')[-1]}"
+                    camera_prim = self.stage.GetPrimAtPath(camera_path)
+                    if camera_prim.IsValid():
+                        # Create token attribute on camera pointing to parent environment
+                        camera_attr = camera_prim.CreateAttribute("omni:scenePartitions", Sdf.ValueTypeNames.Token)
+                        camera_attr.Set(partition_name)
+                        print(f"   ✓ Set omni:scenePartitions = '{partition_name}' on {camera_path}")
+                    else:
+                        print(f"   ⚠ Warning: Camera prim {camera_path} not found")
+                else:
+                    print(f"   ⚠ Warning: Environment prim {env_path} not found")
             
             # OPTIMIZATION: Deactivate cloned environments BEFORE export
             # This dramatically reduces file size and export time
@@ -196,7 +224,7 @@ class TiledCamera(Camera):
                         env_prim.SetActive(False)
                         deactivated_prims.append(env_prim)
                 print(f"   ✓ Deactivated {len(deactivated_prims)} environments")
-            
+
             try:
                 # EXPORT STAGE TO USD FILE (now with only base environment!)
                 export_path = "/tmp/stage_before_ovrtx.usda"

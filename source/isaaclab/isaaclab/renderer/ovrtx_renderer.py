@@ -290,6 +290,69 @@ class OVRTXRenderer(RendererBase):
             print(f"  ✗ ERROR: Failed to clone environments: {e}")
             raise RuntimeError(f"OvRTX environment cloning failed: {e}")
 
+    def _update_scene_partitions_after_clone(self, usd_file_path: str):
+        """Update scene partition attributes on cloned environments and cameras in OvRTX.
+        
+        After OvRTX clones environments, we need to update the partition attributes
+        so each environment and camera has the correct partition identifier.
+        
+        This uses OvRTX's write_attribute API to directly write token attributes,
+        similar to the C++ implementation.
+        
+        Args:
+            usd_file_path: Path to the USD file (not used, kept for compatibility)
+        """
+        print(f"[OVRTX] Writing scene partitions for {self._num_envs} environments...")
+        
+        # Build partition token strings: "env_0", "env_1", ..., "env_N-1"
+        partition_tokens = [f"env_{i}" for i in range(self._num_envs)]
+        
+        # Build environment prim paths
+        env_prim_paths = [f"/World/envs/env_{i}" for i in range(self._num_envs)]
+        
+        # Build camera prim paths
+        camera_prim_paths = [f"/World/envs/env_{i}/Camera" for i in range(self._num_envs)]
+        
+        try:
+            # Write primvars:omni:scenePartition to environment prims
+            env_partition_binding = self._renderer.bind_attribute(
+                prim_paths=env_prim_paths,
+                attribute_name="primvars:omni:scenePartition",
+                semantic="token_string",
+                prim_mode="must_exist",
+            )
+            
+            if env_partition_binding is not None:
+                # Create warp array with token strings
+                # Note: OvRTX expects string tokens as a specific format
+                partition_array = wp.array(partition_tokens, dtype=str, device="cpu")
+                self._renderer.write_attribute(env_partition_binding, partition_array, sync=True)
+                print(f"  ✓ Written primvars:omni:scenePartition to {self._num_envs} environments")
+            else:
+                print(f"  ⚠ Warning: Failed to bind primvars:omni:scenePartition on environments")
+            
+            # Write omni:scenePartitions to camera prims
+            cam_partition_binding = self._renderer.bind_attribute(
+                prim_paths=camera_prim_paths,
+                attribute_name="omni:scenePartitions",
+                semantic="token_string",
+                prim_mode="must_exist",
+            )
+            
+            if cam_partition_binding is not None:
+                # Reuse the same partition tokens for cameras
+                cam_partition_array = wp.array(partition_tokens, dtype=str, device="cpu")
+                self._renderer.write_attribute(cam_partition_binding, cam_partition_array, sync=True)
+                print(f"  ✓ Written omni:scenePartitions to {self._num_envs} cameras")
+            else:
+                print(f"  ⚠ Warning: Failed to bind omni:scenePartitions on cameras")
+                
+        except Exception as e:
+            print(f"  ⚠ Warning: Failed to write scene partitions: {e}")
+            import traceback
+            traceback.print_exc()
+
+
     def initialize(self, usd_scene_path: str | None = None):
         """Initialize the OVRTX renderer with environment cloning optimization.
         
@@ -362,6 +425,8 @@ class OVRTXRenderer(RendererBase):
             # Clone base environment to all other environments in OvRTX
             if self._num_envs > 1:
                 self._clone_environments_in_ovrtx()
+                # Update scene partition attributes on cloned environments
+                self._update_scene_partitions_after_clone(combined_usd_path)
             
             self._initialized_scene = True
             
