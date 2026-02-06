@@ -24,7 +24,6 @@ class OVRTXRendererCfg(RendererCfg):
     """Whether to use simple shading mode (default: True).
     
     When enabled, this mode:
-    - Sets rtx/sdg/force/disableColorRender to true in RenderConfig
     - Uses SimpleShadingSD RenderVar instead of LdrColor for RGB rendering
     
     This provides faster, simpler rendering suitable for many vision-based tasks.
@@ -37,4 +36,18 @@ class OVRTXRendererCfg(RendererCfg):
     When set, all rendered images (RGB, depth, albedo, semantic segmentation) will be
     saved to this directory. If None, no images will be saved to disk.
     Default: None (no image saving).
+    """
+    
+    use_ovrtx_cloning: bool = True
+    """Whether to use OVRTX internal cloning for environments (default: True).
+    
+    When True (default):
+    - Only the base environment (env_0) is exported to USD
+    - OVRTX uses its efficient clone_usd() method to replicate environments
+    - Significantly faster initialization for many environments (10-100x speedup)
+    
+    When False:
+    - All environments are exported to the USD file (fully cloned stage)
+    - OVRTX loads the complete scene without internal cloning
+    - Slower but may be useful for debugging or special rendering requirements
     """

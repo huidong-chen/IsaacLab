@@ -178,6 +178,7 @@ class TiledCamera(Camera):
                 data_types=self.cfg.data_types
                 , simple_shading_mode=False
                 , image_folder="/tmp/ovrtx"
+                , use_ovrtx_cloning=False  # Default: use OVRTX internal cloning for faster initialization
             )
             # Lazy-load the renderer class
             renderer_cls = get_renderer_class("ov_rtx")
@@ -213,27 +214,32 @@ class TiledCamera(Camera):
                 else:
                     print(f"   ⚠ Warning: Environment prim {env_path} not found")
             
-            # OPTIMIZATION: Deactivate cloned environments BEFORE export
+            # OPTIMIZATION: Deactivate cloned environments BEFORE export (if using OVRTX cloning)
             # This dramatically reduces file size and export time
             deactivated_prims = []
-            if self._num_envs > 1:
-                print(f"[TILED_CAMERA] Deactivating {self._num_envs - 1} environments for OvRTX export...")
+            if self._num_envs > 1 and renderer_cfg.use_ovrtx_cloning:
+                print(f"[TILED_CAMERA] Deactivating {self._num_envs - 1} environments for OvRTX export (use_ovrtx_cloning=True)...")
                 for env_idx in range(1, self._num_envs):
                     env_prim = self.stage.GetPrimAtPath(f"/World/envs/env_{env_idx}")
                     if env_prim.IsValid() and env_prim.IsActive():
                         env_prim.SetActive(False)
                         deactivated_prims.append(env_prim)
                 print(f"   ✓ Deactivated {len(deactivated_prims)} environments")
+            elif self._num_envs > 1 and not renderer_cfg.use_ovrtx_cloning:
+                print(f"[TILED_CAMERA] Exporting all {self._num_envs} environments (use_ovrtx_cloning=False)")
 
             try:
-                # EXPORT STAGE TO USD FILE (now with only base environment!)
+                # EXPORT STAGE TO USD FILE
                 export_path = "/tmp/stage_before_ovrtx.usda"
-                print(f"[TILED_CAMERA] Exporting {'base environment only' if deactivated_prims else 'stage'} to: {export_path}")
+                if deactivated_prims:
+                    print(f"[TILED_CAMERA] Exporting base environment only to: {export_path}")
+                else:
+                    print(f"[TILED_CAMERA] Exporting full stage to: {export_path}")
                 self.stage.Export(export_path)
                 print(f"   ✓ Stage exported successfully")
                 
             finally:
-                # CRITICAL: Reactivate environments IMMEDIATELY after export
+                # CRITICAL: Reactivate environments IMMEDIATELY after export (if they were deactivated)
                 if deactivated_prims:
                     print(f"[TILED_CAMERA] Reactivating {len(deactivated_prims)} environments...")
                     for prim in deactivated_prims:
@@ -250,8 +256,9 @@ class TiledCamera(Camera):
                         )
                     print(f"   ✓ View recreated with {self._view.count} prims")
             
-            # Initialize renderer with filtered USD file
-            # Renderer will clone environments internally using OvRTX clone_usd()
+            # Initialize renderer with USD file
+            # If use_ovrtx_cloning=True: renderer will clone environments internally using OvRTX clone_usd()
+            # If use_ovrtx_cloning=False: all environments are already in the USD file
             self._renderer.initialize(usd_scene_path=export_path)
             print("   ✓ Renderer initialized")
 

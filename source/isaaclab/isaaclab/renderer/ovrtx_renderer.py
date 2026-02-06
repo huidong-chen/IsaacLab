@@ -217,6 +217,9 @@ class OVRTXRenderer(RendererBase):
         # Store simple shading mode configuration
         self._simple_shading_mode = cfg.simple_shading_mode if hasattr(cfg, 'simple_shading_mode') else True
         
+        # Store OVRTX cloning configuration
+        self._use_ovrtx_cloning = cfg.use_ovrtx_cloning if hasattr(cfg, 'use_ovrtx_cloning') else True
+        
         # Store image folder configuration
         self._image_folder = cfg.image_folder if hasattr(cfg, 'image_folder') else None
         if self._image_folder:
@@ -354,18 +357,21 @@ class OVRTXRenderer(RendererBase):
 
 
     def initialize(self, usd_scene_path: str | None = None):
-        """Initialize the OVRTX renderer with environment cloning optimization.
+        """Initialize the OVRTX renderer with optional environment cloning.
         
-        Optimization workflow:
-        1. Open exported USD file as temporary stage (doesn't affect Isaac Sim!)
-        2. Deactivate all cloned environments (env_1 ... env_N-1) in temp stage
-        3. Export temp stage to new file (only base environment)
-        4. Load single environment into OvRTX (fast: O(1))
-        5. Use OvRTX clone_usd() to replicate environments (fast: O(1) or O(log N))
+        Two initialization modes based on use_ovrtx_cloning flag:
         
-        This approach is ~10-100x faster than loading all N environments from USD,
-        especially beneficial for 50+ environments. Crucially, it never touches the
-        Isaac Sim stage, so views remain valid.
+        Mode 1: OVRTX Internal Cloning (use_ovrtx_cloning=True, default):
+        1. Load USD file containing only base environment (env_0)
+        2. Use OvRTX clone_usd() to replicate environments (fast: O(1) or O(log N))
+        3. ~10-100x faster initialization for 50+ environments
+        
+        Mode 2: Fully Cloned USD (use_ovrtx_cloning=False):
+        1. Load USD file containing all N environments (fully cloned)
+        2. No internal cloning needed
+        3. Slower but may be useful for debugging or special rendering requirements
+        
+        The Isaac Sim stage is never modified - this only affects the exported USD.
         
         Args:
             usd_scene_path: Optional path to USD scene to load as root layer.
@@ -388,7 +394,6 @@ class OVRTXRenderer(RendererBase):
         
         # Add simple shading mode configuration if enabled
         if self._simple_shading_mode:
-            startup_options["rtx/sdg/force/disableColorRender"] = "true"
             print(f"[OVRTX] Simple shading mode ENABLED")
         else:
             print(f"[OVRTX] Simple shading mode DISABLED (using full RTX path tracing)")
@@ -401,13 +406,13 @@ class OVRTXRenderer(RendererBase):
         # Initialize output buffers
         self._initialize_output()
         
-        # If a USD scene is provided, load and clone
+        # If a USD scene is provided, load and optionally clone
         if usd_scene_path is not None:
             from pxr import Usd
             
             # Load USD file into OvRTX
-            # Note: tiled_camera.py has already filtered this to only contain env_0
-            # if num_envs > 1, so this will be fast!
+            # Note: tiled_camera.py may have filtered this to only contain env_0
+            # if use_ovrtx_cloning=True and num_envs > 1
             print(f"[OVRTX] Injecting camera definitions...")
             combined_usd_path = self._inject_cameras_into_usd(usd_scene_path)
             
@@ -422,11 +427,16 @@ class OVRTXRenderer(RendererBase):
                 traceback.print_exc()
                 raise
             
-            # Clone base environment to all other environments in OvRTX
-            if self._num_envs > 1:
+            # Clone base environment to all other environments in OvRTX (if enabled and needed)
+            if self._use_ovrtx_cloning and self._num_envs > 1:
+                print(f"[OVRTX] Using OVRTX internal cloning (use_ovrtx_cloning=True)")
                 self._clone_environments_in_ovrtx()
                 # Update scene partition attributes on cloned environments
-                self._update_scene_partitions_after_clone(combined_usd_path)
+                #self._update_scene_partitions_after_clone(combined_usd_path)
+            else:
+                if self._num_envs > 1:
+                    print(f"[OVRTX] Using fully cloned USD stage (use_ovrtx_cloning=False)")
+                    print(f"   ✓ All {self._num_envs} environments loaded from USD")
             
             self._initialized_scene = True
             
