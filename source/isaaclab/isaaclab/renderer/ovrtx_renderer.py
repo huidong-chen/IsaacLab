@@ -769,9 +769,12 @@ class OVRTXRenderer(RendererBase):
         
         num_envs = camera_positions.shape[0]
         
-        # Camera orientations are already in OpenGL convention from USD
-        # No conversion needed!
-        camera_quats_opengl = camera_orientations
+        # Convert camera orientations from world convention to OpenGL convention
+        # This is necessary because Camera._update_poses() converts from opengl to world,
+        # but OVRTX expects OpenGL convention (same as Newton Warp Renderer)
+        camera_quats_opengl = convert_camera_frame_orientation_convention(
+            camera_orientations, origin="world", target="opengl"
+        )
         
         # Convert torch tensors to warp arrays
         camera_positions_wp = wp.from_torch(camera_positions.contiguous(), dtype=wp.vec3)

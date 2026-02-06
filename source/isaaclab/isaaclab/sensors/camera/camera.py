@@ -618,7 +618,9 @@ class Camera(SensorBase):
         # USD cameras are in OpenGL convention, and both Newton and OVRTX renderers
         # expect OpenGL convention. Converting to "world" and back is unnecessary and
         # can introduce numerical errors.
-        self._data.quat_w_world[env_ids] = quat.to(device=self._device)
+        self._data.quat_w_world[env_ids] = convert_camera_frame_orientation_convention(
+            quat.to(device=self._device), origin="opengl", target="world"
+        )
         
         # DEBUG: Print stored value
         #if 0 in env_ids:

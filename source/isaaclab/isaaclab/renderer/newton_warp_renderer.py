@@ -277,14 +277,14 @@ class NewtonWarpRenderer(RendererBase):
             self.set_camera_rays_from_intrinsics(intrinsic_matrices)
         num_envs = camera_positions.shape[0]
 
-        # Camera orientations are already in OpenGL convention from USD
-        # No conversion needed!
-        camera_quats_opengl = camera_orientations
-
         # Convert torch tensors to warp arrays directly on GPU
         # Positions: shape (num_envs, 3) -> shape (num_envs,) of vec3
         camera_positions_wp = wp.from_torch(camera_positions.contiguous(), dtype=wp.vec3)
-        camera_orientations_wp = wp.from_torch(camera_quats_opengl, dtype=wp.quat)
+        camera_quats_converted = convert_camera_frame_orientation_convention(
+            camera_orientations, origin="world", target="opengl"
+        )
+
+        camera_orientations_wp = wp.from_torch(camera_quats_converted, dtype=wp.quat)
 
         # Create camera transforms array, TODO: num_cameras = 1
         # Format: wp.array of shape (num_envs, num_cameras), dtype=wp.transformf

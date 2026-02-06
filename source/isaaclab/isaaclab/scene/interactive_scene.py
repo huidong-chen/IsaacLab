@@ -27,6 +27,7 @@ from .interactive_scene_cfg import InteractiveSceneCfg
 # import logger
 logger = logging.getLogger(__name__)
 
+
 class InteractiveScene:
     """A scene that contains entities added to the simulation.
 

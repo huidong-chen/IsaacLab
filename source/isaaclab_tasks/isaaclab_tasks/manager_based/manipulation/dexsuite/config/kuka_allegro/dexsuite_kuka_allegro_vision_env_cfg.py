@@ -23,8 +23,8 @@ class KukaAllegroSingleTiledCameraSceneCfg(kuka_allegro_dexsuite.KukaAllegroScen
     """Dexsuite scene for multi-objects Lifting/Reorientation"""
 
     camera_type: str = "rgb"
-    width: int = 64
-    height: int = 64
+    width: int = 256
+    height: int = 256
 
     base_camera = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Camera",
@@ -39,7 +39,7 @@ class KukaAllegroSingleTiledCameraSceneCfg(kuka_allegro_dexsuite.KukaAllegroScen
         height=MISSING,
         #renderer_type="newton_warp",
         renderer_type="ov_rtx", 
-        update_latest_camera_pose=False,
+        update_latest_camera_pose=True,
     )
 
     def __post_init__(self):
