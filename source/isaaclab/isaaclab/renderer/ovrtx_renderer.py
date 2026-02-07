@@ -431,8 +431,8 @@ class OVRTXRenderer(RendererBase):
             if self._use_ovrtx_cloning and self._num_envs > 1:
                 print(f"[OVRTX] Using OVRTX internal cloning (use_ovrtx_cloning=True)")
                 self._clone_environments_in_ovrtx()
-                # Update scene partition attributes on cloned environments
-                #self._update_scene_partitions_after_clone(combined_usd_path)
+                # Update scene partition attributes on cloned environments, objects, and cameras
+                self._update_scene_partitions_after_clone(combined_usd_path)
             else:
                 if self._num_envs > 1:
                     print(f"[OVRTX] Using fully cloned USD stage (use_ovrtx_cloning=False)")

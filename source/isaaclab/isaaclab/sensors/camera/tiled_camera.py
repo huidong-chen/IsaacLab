@@ -187,18 +187,34 @@ class TiledCamera(Camera):
             self._renderer = renderer_cls(renderer_cfg)
 
             # Add primvars:omni:scenePartition attribute to each environment prim
-            # and omni:scenePartitions relationship to each camera prim
+            # and all objects within it, plus omni:scenePartitions to camera prims
             print(f"[TILED_CAMERA] Setting up scene partitions for {self._num_envs} environments...")
-            from pxr import Sdf
+            from pxr import Sdf, Usd
+            
+            total_objects = 0
             for env_idx in range(self._num_envs):
                 env_path = f"/World/envs/env_{env_idx}"
                 env_prim = self.stage.GetPrimAtPath(env_path)
                 if env_prim.IsValid():
-                    # Create the primvar attribute on environment with the correct type (token)
                     partition_name = f"env_{env_idx}"
+                    
+                    # Set partition on environment root prim
                     attr = env_prim.CreateAttribute("primvars:omni:scenePartition", Sdf.ValueTypeNames.Token)
                     attr.Set(partition_name)
-                    print(f"   ✓ Set primvars:omni:scenePartition = '{partition_name}' on {env_path}")
+                    
+                    # Traverse all descendant prims and set partition on each
+                    # This ensures ALL objects in the environment have the correct partition
+                    env_objects = []
+                    for prim in Usd.PrimRange(env_prim):
+                        # Skip the root prim itself (already handled) and cameras
+                        if prim.GetPath() != env_prim.GetPath() and "Camera" not in prim.GetPath().pathString:
+                            # Set partition attribute on each object
+                            obj_attr = prim.CreateAttribute("primvars:omni:scenePartition", Sdf.ValueTypeNames.Token)
+                            obj_attr.Set(partition_name)
+                            env_objects.append(prim.GetPath().pathString)
+                    
+                    total_objects += len(env_objects)
+                    print(f"   ✓ Set primvars:omni:scenePartition = '{partition_name}' on {env_path} + {len(env_objects)} objects")
                     
                     # Find camera prim for this environment and add omni:scenePartitions relationship
                     # Camera paths follow pattern like /World/envs/env_0/Camera (or similar based on cfg.prim_path)
@@ -213,6 +229,8 @@ class TiledCamera(Camera):
                         print(f"   ⚠ Warning: Camera prim {camera_path} not found")
                 else:
                     print(f"   ⚠ Warning: Environment prim {env_path} not found")
+            
+            print(f"[TILED_CAMERA] Scene partition setup complete: {self._num_envs} environments, {total_objects} total objects")
             
             # OPTIMIZATION: Deactivate cloned environments BEFORE export (if using OVRTX cloning)
             # This dramatically reduces file size and export time
