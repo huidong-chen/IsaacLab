@@ -26,7 +26,9 @@ from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 ##
 KUKA_ALLEGRO_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/KukaAllegro/kuka.usd",
+        # usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/KukaAllegro/kuka.usd",
+        # usd_path="/home/horde/Downloads/kuka.usd",
+        usd_path=f"https://omniverse-mega-dev.s3.us-west-2.amazonaws.com/generated/huidongc/kuka.usd",
         activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=True,

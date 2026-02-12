@@ -22,7 +22,7 @@ from . import dexsuite_kuka_allegro_env_cfg as kuka_allegro_dexsuite
 class KukaAllegroSingleTiledCameraSceneCfg(kuka_allegro_dexsuite.KukaAllegroSceneCfg):
     """Dexsuite scene for multi-objects Lifting/Reorientation"""
 
-    camera_type: str = "rgb"
+    camera_type: str = "semantic_segmentation"
     width: int = 64
     height: int = 64
 
